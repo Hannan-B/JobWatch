@@ -1,0 +1,26 @@
+# --- Local-only docs (private notes, not for the public repo) ---
+FILE-MAP.md
+JOBWATCH_HANDOVER.md
+JOBWATCH_V2_HANDOVER.md
+
+# --- Personal data (lives in ~/JobWatchData, outside the repo — belt-and-braces) ---
+JobWatchData/
+# guard against a stray data copy in the repo root, but KEEP the bundled city DB
+/*.json
+!jobwatch/data/cities.json
+
+# --- Python bytecode (regenerated on every run) ---
+__pycache__/
+*.pyc
+
+# --- macOS clutter (also mildly info-leaky) ---
+.DS_Store
+
+# --- Editor settings ---
+.vscode/
+.idea/
+
+# --- Secrets (you have none now, but never commit these) ---
+.env
+*.pem
+*.key

@@ -1,0 +1,2053 @@
+/* ===========================================================================
+   JobWatch interface — Phase E (Batch 1)
+   Design: a quiet desk instrument for watching companies. Warm paper base,
+   ink text, one signal colour (amber-gold = "new / look here"), muted slate
+   for the ambient. Display serif with personality (Fraunces), clean body
+   (Inter), mono for the instrument-readout numbers and dates.
+   =========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,400&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --paper:      #F6F2EA;   /* warm base */
+  --paper-2:    #FBF8F2;   /* raised cards */
+  --ink:        #211C16;   /* near-black warm ink */
+  --ink-soft:   #5C544A;   /* secondary text */
+  --ink-faint:  #938A7C;   /* captions, meta */
+  --rule:       #E3DCCE;   /* hairlines */
+  --rule-2:     #D2C8B6;   /* stronger hairlines */
+
+  --signal:     #C8780C;   /* amber-gold: NEW / look here */
+  --signal-bg:  #FBEFD9;   /* amber wash behind new things */
+  --slate:      #3E4A52;   /* ambient / casual cool */
+  --slate-bg:   #E8ECEE;
+  --removed:    #9A8C7B;   /* removed roles: faded, not alarming — FIXED, never themed */
+  --stretch:    #B6741A;   /* experience stretch flag — FIXED, never themed */
+  --ok:         #4E6B4A;   /* gentle confirmation green — FIXED, never themed */
+
+  /* Phase H — the single themeable accent. Everything that should take the
+     current phase's colour ("new / look here / the lead") reads --accent, not
+     --signal directly. In active-light it IS the amber, so the v1 look is
+     unchanged; the [data-theme]/[data-mode] blocks below re-point it (and the
+     paper/ink/rule tokens) per phase type and light/dark mode. The semantic
+     flags above (removed/stretch/ok) deliberately do NOT follow the theme. */
+  --accent:     var(--signal);
+  --accent-bg:  var(--signal-bg);
+  --on-accent:  #FBF7EF;   /* text on the accent; per-theme overrides ensure >=4.5:1 */
+
+  /* Destructive actions (remove company / delete bucket). Kept red across all
+     themes so "delete" always reads as caution, but tokenised so the exact
+     shade works on each ground — light defaults here, dark override below. */
+  --danger:        #A23B2D;   /* text/border for the ghost danger button */
+  --danger-border: #D8B6AC;
+  --danger-bg:     #F3E3DE;   /* hover wash */
+
+  --shadow: 0 1px 2px rgba(33,28,22,.04), 0 6px 18px rgba(33,28,22,.05);
+  --radius: 10px;
+  --maxw: 1200px;
+}
+
+/* ===========================================================================
+   PHASE H — phase-type colour theming (active / casual / dormant) × (light /
+   dark). Two attributes drive everything: data-theme on <html> (the phase
+   type, from /api/home's phase_state) and data-mode (resolved light|dark).
+   We override only a small subset of tokens; the cascade re-skins the rest.
+   The v1 :root above is the active-light baseline and is never deleted.
+
+   System logic (locked with the user): active = COOL focus, casual = WARM calm,
+   dormant = NEUTRAL rest. The switch reads on the whole ground, not just accent.
+   =========================================================================== */
+
+/* ---- ACTIVE — cool, focused ------------------------------------------- */
+:root[data-theme="active"] {
+  --paper: #F8F2E8; --paper-2: #F0E7D6;
+  --ink: #211E18; --ink-soft: #4F4A40; --ink-faint: #857F73;
+  --rule: #EAE0CE; --rule-2: #E0D6C4;
+  --accent: #C8780C; --accent-bg: #FBEFD9; --on-accent: #16130D;
+}
+:root[data-theme="active"][data-mode="dark"] {
+  --paper: #141009; --paper-2: #1F170D;
+  --ink: #F5EBDA; --ink-soft: #CBB897; --ink-faint: #9C8463;
+  --rule: #2A2013; --rule-2: #322617;
+  --accent: #EFBA74; --accent-bg: #2A2013; --on-accent: #16130D;
+}
+
+/* ---- CASUAL — warm, calm ---------------------------------------------- */
+:root[data-theme="casual"] {
+  --paper: #EEF1F3; --paper-2: #E1E7EB;
+  --ink: #14191C; --ink-soft: #3C474D; --ink-faint: #6E7C84;
+  --rule: #DBE2E6; --rule-2: #CFD8DD;
+  --accent: #2F6F8F; --accent-bg: #DCE8EE; --on-accent: #FBF7EF;
+}
+:root[data-theme="casual"][data-mode="dark"] {
+  --paper: #141A1E; --paper-2: #1C242A;
+  --ink: #EAF1F4; --ink-soft: #AFC0C8; --ink-faint: #728690;
+  --rule: #222E34; --rule-2: #2A353B;
+  --accent: #5FA8C4; --accent-bg: #1B2A31; --on-accent: #16130D;
+}
+
+/* ---- DORMANT — neutral, resting --------------------------------------- */
+:root[data-theme="dormant"] {
+  --paper: #EFEFEF; --paper-2: #E4E4E4;
+  --ink: #1A1A1A; --ink-soft: #555555; --ink-faint: #8A8A8A;
+  --rule: #DDDDDD; --rule-2: #D6D6D6;
+  --accent: #6E6E6E; --accent-bg: #DCDCDC; --on-accent: #FBF7EF;
+}
+:root[data-theme="dormant"][data-mode="dark"] {
+  --paper: #0C0C0C; --paper-2: #161616;
+  --ink: #F2F2F2; --ink-soft: #B4B4B4; --ink-faint: #777777;
+  --rule: #1F1F1F; --rule-2: #262626;
+  --accent: #9A9A9A; --accent-bg: #1F1F1F; --on-accent: #16130D;
+}
+
+/* ---- the gentle transition on a switch or a light/dark flip (H.4) ------
+   ~350ms so a phase switch visibly *shifts* rather than hard-cuts. Scoped to
+   colour properties only (never layout) to avoid jank. prefers-reduced-motion
+   disables it (handled by the existing global rule near .backlink). */
+html, body,
+.reading, .banner, .switch-trigger, .switch-menu, .btn, .bucket,
+.toggle, .tag, .modal, .seg, .pref-block, input, textarea, select {
+  transition: background-color .35s ease, color .35s ease,
+              border-color .35s ease, box-shadow .35s ease;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Tell the browser which scheme native chrome (caret, autofill, scrollbars,
+   default form widgets) should match, so inputs never render dark-on-dark. */
+:root[data-mode="light"] { color-scheme: light; }
+:root[data-mode="dark"]  { color-scheme: dark; }
+
+/* Danger tokens for dark mode: a lifted red that's legible on dark grounds,
+   with a low, dark-tinted hover wash instead of the light-mode pink. Applies
+   across all phases in dark mode. */
+:root[data-mode="dark"] {
+  --danger:        #E8836F;
+  --danger-border: #6E382E;
+  --danger-bg:     #2E1A16;
+}
+
+body { padding: 0 0 96px; }
+
+/* With the masthead gone, give content a little breathing room below the top
+   edge. On Home the content is vertically centred, so it manages its own space.
+   Horizontal gutters live HERE (not on body) so the full-width banner can reach
+   the screen edges while the content keeps comfortable side margins. */
+.wrap { max-width: var(--maxw); margin: 0 auto; padding-top: 28px; padding-left: 32px; padding-right: 32px; }
+body.on-home .wrap { padding-top: 0; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---- phase-state banner (the signature "current reading") -------------- */
+.reading {
+  border: 1.5px solid var(--rule-2);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  padding: 22px 26px;
+  margin-bottom: 26px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  /* Horizontal: phase identity on the left, key facts on the right, using the
+     full banner width rather than clamping everything to the left edge. */
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 24px; flex-wrap: wrap;
+}
+.reading::before {     /* a left status spine that takes the state's colour */
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 5px;
+  background: var(--slate);
+}
+.reading.is-active::before { background: var(--accent); }
+.reading.is-casual::before { background: var(--accent); }
+.reading.is-dormant::before { background: var(--accent); }
+
+.reading-main { min-width: 0; }
+.reading .eyebrow {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 6px;
+}
+.reading .phase-name {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 25px;
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.reading .phase-note { color: var(--ink-soft); font-size: 14.5px; margin: 0; }
+.reading .phase-note.nudge { color: var(--accent); font-weight: 500; }
+.reading .phase-meta {
+  display: flex; flex-wrap: wrap; gap: 6px 22px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  text-align: right;
+}
+.reading .phase-meta b { color: var(--ink-soft); font-weight: 500; }
+
+@media (max-width: 620px) {
+  .reading { padding: 18px 20px; }
+  .reading .phase-meta { text-align: left; }
+}
+
+/* ---- section headings -------------------------------------------------- */
+.sec-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin: 32px 0 14px;
+}
+.sec-head h2 {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 19px;
+  margin: 0;
+}
+.sec-head .hint { font-size: 13px; color: var(--ink-faint); }
+
+/* ---- buckets ----------------------------------------------------------- */
+.bucket-grid { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+@media (max-width: 620px) { .bucket-grid { grid-template-columns: 1fr; } }
+
+.bucket {
+  text-align: left;
+  border: 1.5px solid var(--rule-2);
+  background: var(--paper-2);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color .15s, transform .08s, box-shadow .15s;
+}
+.bucket:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+.bucket:active { transform: translateY(1px); }
+.bucket:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.bucket .b-name { font-weight: 600; font-size: 16px; }
+.bucket .b-meta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px; color: var(--ink-faint); margin-top: 6px;
+}
+.bucket .b-go {
+  margin-top: 12px; font-size: 13px; font-weight: 500; color: var(--accent);
+}
+
+/* ---- buttons ----------------------------------------------------------- */
+.btn {
+  font: inherit; font-weight: 500; font-size: 14px;
+  border-radius: 8px; padding: 9px 16px; cursor: pointer;
+  border: 1.5px solid var(--ink); background: var(--ink); color: var(--paper);
+  transition: opacity .15s, transform .08s;
+}
+.btn:hover { opacity: .9; }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.btn.ghost { background: transparent; color: var(--ink); border-color: var(--rule-2); }
+.btn.ghost:hover { border-color: var(--ink); opacity: 1; }
+.btn.signal { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.danger { background: transparent; color: var(--danger); border-color: var(--danger-border); }
+.btn.danger:hover { background: var(--danger-bg); border-color: var(--danger); opacity: 1; }
+.btn[disabled] { opacity: .4; cursor: not-allowed; }
+.btn.small { padding: 6px 12px; font-size: 13px; }
+
+.btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+/* ---- the run view: a calm progressing list ----------------------------- */
+.run-panel {
+  border: 1.5px solid var(--rule-2);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  padding: 22px;
+  margin-top: 6px;
+}
+.run-note {
+  font-size: 13.5px; color: var(--ink-soft);
+  background: var(--paper-2); border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 10px 13px; margin: 0 0 18px;
+}
+.bar-track {
+  height: 8px; background: var(--rule); border-radius: 999px; overflow: hidden;
+}
+.bar-fill {
+  height: 100%; width: 0%; background: var(--accent);
+  border-radius: 999px; transition: width .4s ease;
+}
+.bar-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px; color: var(--ink-faint);
+  margin-top: 8px; display: flex; justify-content: space-between;
+}
+.run-list { list-style: none; margin: 18px 0 0; padding: 0; }
+.run-list li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 0; border-bottom: 1px solid var(--rule);
+  font-size: 14.5px;
+}
+.run-list li:last-child { border-bottom: none; }
+.tick { width: 16px; flex: none; font-family: 'IBM Plex Mono', monospace; }
+.tick.pending { color: var(--ink-faint); }
+.tick.doing   { color: var(--accent); }
+.tick.done    { color: var(--ok); }
+.tick.failed  { color: var(--danger); }
+.tick.skipped { color: var(--ink-faint); }
+.run-list .r-name { flex: 1; }
+.run-list .r-delta {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;
+  color: var(--ink-faint);
+}
+.run-list .r-delta .new { color: var(--accent); font-weight: 500; }
+
+/* ---- report ------------------------------------------------------------ */
+.report-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 16px; margin: 6px 0 18px; flex-wrap: wrap;
+}
+.tally {
+  font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--ink-soft);
+}
+.tally b { color: var(--accent); }
+
+.toggle {
+  display: inline-flex; border: 1.5px solid var(--rule-2); border-radius: 8px;
+  overflow: hidden;
+}
+.toggle button {
+  font: inherit; font-size: 13px; font-weight: 500;
+  padding: 7px 14px; border: none; background: transparent; color: var(--ink-soft);
+  cursor: pointer;
+}
+.toggle button.on { background: var(--ink); color: var(--paper); }
+.toggle button:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+
+.company-block { margin-bottom: 26px; }
+.company-block > h3 {
+  font-family: 'Fraunces', serif; font-weight: 500; font-size: 17px;
+  margin: 0 0 4px; padding-bottom: 6px; border-bottom: 1.5px solid var(--rule-2);
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.company-block > h3 .c-count {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-faint);
+  font-weight: 400;
+}
+
+.job {
+  padding: 11px 0; border-bottom: 1px solid var(--rule);
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.job:last-child { border-bottom: none; }
+.job.is-new { }
+.job .marker {
+  flex: none; width: 8px; height: 8px; border-radius: 999px;
+  margin-top: 7px; background: var(--rule-2);
+}
+.job.is-new .marker { background: var(--accent); }
+.job.is-removed .marker { background: var(--removed); }
+.job .j-main { flex: 1; min-width: 0; }
+.job .j-title { font-weight: 500; font-size: 15px; }
+.job.is-removed .j-title { color: var(--removed); text-decoration: line-through; }
+.job .j-sub {
+  font-size: 13px; color: var(--ink-faint); margin-top: 2px;
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+}
+.job .j-company { color: var(--slate); font-weight: 500; }
+.tag {
+  font-family: 'IBM Plex Mono', monospace; font-size: 10.5px;
+  padding: 2px 7px; border-radius: 999px; letter-spacing: .03em;
+  white-space: nowrap;
+}
+.tag.new      { background: var(--accent-bg); color: var(--accent); }
+.tag.interest { background: var(--accent-bg); color: var(--accent); }
+.tag.unclear  { background: var(--slate-bg); color: var(--slate); }
+.tag.stretch  { background: #F3E3C9; color: var(--stretch); }
+
+/* ---- empty / friendly states ------------------------------------------ */
+.empty {
+  border: 1.5px dashed var(--rule-2); border-radius: var(--radius);
+  padding: 30px 24px; text-align: center; background: var(--paper-2);
+}
+.empty h3 {
+  font-family: 'Fraunces', serif; font-weight: 500; font-size: 19px; margin: 0 0 8px;
+}
+.empty p { color: var(--ink-soft); margin: 0 auto 16px; max-width: 460px; }
+
+/* ---- manage screen (E.5): companies & buckets ------------------------- */
+.bucket-chiprow { display: flex; flex-wrap: wrap; gap: 8px; }
+.bucket-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  border: 1.5px solid var(--rule-2); background: var(--paper-2);
+  border-radius: 999px; padding: 5px 6px 5px 13px; font-size: 13.5px;
+}
+.bucket-chip .chip-name { font-weight: 500; }
+.bucket-chip .chip-count {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  color: var(--ink-faint); background: var(--paper); border-radius: 999px;
+  padding: 1px 7px;
+}
+.bucket-chip .chip-x {
+  border: none; background: none; cursor: pointer; color: var(--ink-faint);
+  font-size: 17px; line-height: 1; padding: 0 4px; border-radius: 999px;
+}
+.bucket-chip .chip-x:hover { color: var(--danger); }
+
+.pick-chip {
+  font: inherit; font-size: 13.5px; cursor: pointer;
+  border: 1.5px solid var(--rule-2); background: var(--paper);
+  border-radius: 999px; padding: 6px 14px; color: var(--ink-soft);
+  transition: all .12s;
+}
+.pick-chip:hover { border-color: var(--ink-faint); }
+.pick-chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 500; }
+
+.company-list { display: flex; flex-direction: column; }
+.company-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 14px 0; border-bottom: 1px solid var(--rule);
+}
+.company-row:last-child { border-bottom: none; }
+.cl-main { min-width: 0; flex: 1; }
+.cl-name {
+  font-weight: 600; font-size: 15.5px; display: flex; align-items: center;
+  gap: 10px; flex-wrap: wrap;
+}
+.cl-status {
+  font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; font-weight: 400;
+  padding: 2px 8px; border-radius: 999px; letter-spacing: .02em;
+}
+.cl-status.ok { background: #E4EBE2; color: var(--ok); }
+.cl-status.pending { background: var(--slate-bg); color: var(--slate); }
+.cl-buckets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.cl-actions { display: flex; gap: 8px; flex: none; }
+
+.url-row { display: flex; gap: 8px; }
+.url-row input[type=text] { flex: 1; }
+.detect-result { margin: 4px 0 10px; }
+.detect-msg {
+  font-size: 13.5px; border-radius: 8px; padding: 10px 13px; line-height: 1.45;
+}
+.detect-msg.good { background: var(--signal-bg); color: #8A5208; }
+.detect-msg.warn { background: var(--slate-bg); color: var(--slate); }
+
+/* ---- modal (start phase, switch, etc.) -------------------------------- */
+.modal-veil {
+  position: fixed; inset: 0; background: rgba(33,28,22,.34);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  z-index: 50;
+}
+.modal {
+  background: var(--paper-2); border-radius: var(--radius);
+  border: 1.5px solid var(--rule-2); box-shadow: var(--shadow);
+  width: 100%; max-width: 440px; padding: 26px;
+  max-height: 90vh; overflow-y: auto;
+}
+.modal h2 {
+  font-family: 'Fraunces', serif; font-weight: 500; font-size: 21px; margin: 0 0 6px;
+}
+.modal p { color: var(--ink-soft); font-size: 14px; margin: 0 0 18px; }
+.field { margin-bottom: 16px; }
+.field label {
+  display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px;
+}
+/* Universal text-input baseline so EVERY field (in .field, .url-row, modals,
+   interests, etc.) follows the theme. Previously only .field inputs were styled,
+   leaving url-row/modal inputs with browser-default colours — dark-on-dark in
+   dark mode. Layout-only tweaks (width, flex) stay on the wrappers. */
+input[type=text], input:not([type]), textarea {
+  font: inherit; padding: 9px 12px;
+  color: var(--ink); background: var(--paper);
+  border: 1.5px solid var(--rule-2); border-radius: 8px;
+}
+input[type=text]::placeholder, textarea::placeholder { color: var(--ink-faint); opacity: 1; }
+input[type=text]:focus, input:not([type]):focus, textarea:focus {
+  outline: none; border-color: var(--accent);
+}
+.field input[type=text] { width: 100%; }
+.seg { display: inline-flex; gap: 8px; }
+.seg button {
+  font: inherit; font-size: 14px; padding: 9px 16px;
+  border: 1.5px solid var(--rule-2); border-radius: 8px; background: var(--paper);
+  cursor: pointer; color: var(--ink-soft);
+}
+.seg button.on { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.seg .seg-sub { display: block; font-size: 11px; color: inherit; opacity: .7; margin-top: 2px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+/* The two stacked choices in the switch-type "same phase or new?" modal. */
+.switch-choice-actions {
+  display: flex; flex-direction: column; gap: 10px; margin-top: 16px;
+}
+.switch-choice-actions .btn { width: 100%; justify-content: center; }
+
+/* ---- toast / inline error --------------------------------------------- */
+.toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  background: var(--ink); color: var(--paper); padding: 11px 18px;
+  border-radius: 8px; font-size: 14px; box-shadow: var(--shadow); z-index: 60;
+  max-width: 88vw;
+}
+.toast.err { background: #7C3B2B; }
+
+/* ---- misc -------------------------------------------------------------- */
+.hidden { display: none !important; }
+.muted { color: var(--ink-faint); }
+.loading {
+  font-family: 'IBM Plex Mono', monospace; color: var(--ink-faint);
+  font-size: 13px; padding: 20px 0;
+}
+.backlink {
+  font-size: 13px; color: var(--ink-soft); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; margin-bottom: 6px;
+  background: none; border: none; font-family: inherit; padding: 4px 0;
+}
+.backlink:hover { color: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+
+/* ---- preferences screens (E.6 interests, E.7 settings & guide) -------- */
+.lead {
+  font-size: 14.5px; color: var(--ink-soft); max-width: 620px;
+  margin: 0 0 8px; line-height: 1.55;
+}
+.pref-block {
+  border: 1.5px solid var(--rule-2); border-radius: var(--radius);
+  background: var(--paper-2); padding: 20px 22px; margin-top: 16px;
+}
+.pref-block > h3 {
+  font-family: 'Fraunces', serif; font-weight: 500; font-size: 17px;
+  margin: 0 0 4px;
+}
+.pref-hint {
+  font-size: 13.5px; color: var(--ink-faint); margin: 0 0 14px;
+  line-height: 1.5; max-width: 600px;
+}
+.guide-providers { font-size: 13.5px; margin: 0; line-height: 1.6; }
+
+/* ranked keyword list */
+.rank-list { display: flex; flex-direction: column; gap: 6px; }
+.rank-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 12px; border: 1.5px solid var(--rule); border-radius: 8px;
+  background: var(--paper);
+}
+.rank-num {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500;
+  color: var(--accent); flex: none; width: 26px;
+}
+.rank-text { flex: 1; font-weight: 500; font-size: 14.5px; }
+.rank-actions { display: flex; gap: 4px; flex: none; }
+
+.mini {
+  font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+  border: 1.5px solid var(--rule-2); background: var(--paper-2);
+  border-radius: 6px; width: 30px; height: 30px; color: var(--ink-soft);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.mini:hover { border-color: var(--ink-faint); }
+.mini.danger:hover { color: var(--danger); border-color: var(--danger-border); }
+.mini[disabled] { opacity: .35; cursor: not-allowed; }
+
+/* =========================================================================
+   TRENDS (Phase F) — the quiet across-time instrument
+   ========================================================================= */
+.trend-select {
+  font-family: 'Inter', sans-serif; font-size: 14px;
+  color: var(--ink); background: var(--paper-2);
+  border: 1.5px solid var(--rule-2); border-radius: 8px;
+  padding: 7px 10px; cursor: pointer;
+}
+.trend-select:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+
+/* the chart card */
+.trend-chart-wrap {
+  border: 1.5px solid var(--rule-2);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  padding: 14px 16px 6px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+.trend-svg { display: block; max-width: 100%; height: auto; }
+
+.trend-grid { stroke: var(--rule); stroke-width: 1; }
+.trend-axis-label {
+  font-family: 'IBM Plex Mono', monospace; font-size: 10.5px;
+  fill: var(--ink-faint);
+}
+/* The x-axis date row sits OUTSIDE the plot, below a solid baseline rule. Its
+   label ink is stronger than the y-axis captions (so dates read cleanly) and
+   theme-aware: it follows --ink-soft, which every light/dark/phase theme
+   redefines, so contrast holds across the board. */
+.trend-axis-rule { stroke: var(--rule-2); stroke-width: 1.5; }
+/* Weekly bars are SVG <rect>s — their height comes from the height attribute,
+   NOT CSS. (They must not reuse .funnel-bar, whose `height:100%` is for the HTML
+   funnel and would stretch every rect to the full plot.) */
+.weekly-bar { transition: opacity .15s; }
+.trend-xlabel {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; font-weight: 500;
+  fill: var(--ink); letter-spacing: .01em;
+}
+.trend-band-bg { fill: var(--slate-bg); opacity: .45; }
+.trend-band-divider { stroke: var(--rule-2); stroke-width: 1; stroke-dasharray: 3 3; }
+.trend-band-label {
+  font-family: 'Fraunces', serif; font-size: 12px; fill: var(--ink-soft);
+}
+/* Coverage-gap band (Post-Phase-O): a hatched advisory fill marking a stretch
+   with no checks, where the line between points may mislead. Uses the danger
+   tint very softly so it reads as "caution, not data" without alarming. */
+.trend-gap-band { fill: var(--danger); opacity: .07; }
+.trend-gap-label {
+  font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; fill: var(--danger);
+  opacity: .75;
+}
+/* In-phase active<->casual switch marker: a light divider + tiny sub-label, so
+   one phase still shows when its rhythm changed without splitting the band. */
+.trend-switch-divider {
+  stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 4; opacity: .55;
+}
+.trend-switch-label {
+  font-family: 'IBM Plex Mono', monospace; font-size: 9px; fill: var(--accent);
+  opacity: .85;
+}
+.trend-dot { stroke: var(--paper-2); stroke-width: 1.5; transition: opacity .15s; }
+.trend-point-val {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 500;
+}
+
+/* Phase-N rework — the reference-style line: a smoothed stroke, a soft gradient
+   area under the total line, a faint vertical guide on every column, and a
+   floating value bubble on hover. All token-driven so it themes with the phase. */
+.trend-line { transition: opacity .15s; }
+.trend-area { transition: opacity .15s; }
+.trend-line.dim, .trend-area.dim, .trend-dot.dim { opacity: .16; }
+.trend-vguide { stroke: var(--rule); stroke-width: 1; opacity: .5; }
+.trend-hover-line {
+  stroke: var(--ink-soft); stroke-width: 1; stroke-dasharray: 3 3; opacity: .6;
+  pointer-events: none;
+}
+.trend-tip { pointer-events: none; }
+.trend-tip-bg {
+  fill: var(--ink); opacity: .94;
+}
+.trend-tip-date {
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px; fill: var(--paper);
+  opacity: .8;
+}
+.trend-tip-val {
+  font-family: 'Fraunces', serif; font-size: 14px; font-weight: 600; fill: var(--paper);
+}
+
+/* the plain-language one-line reading under the chart */
+.trend-readout {
+  font-family: 'Fraunces', serif; font-size: 16px;
+  color: var(--ink-soft); line-height: 1.45;
+  border-left: 2.5px solid var(--accent);
+  padding: 4px 0 4px 14px; margin: 8px 0 4px;
+}
+
+/* =========================================================================
+   PHASE N — Trends: the two sub-tabs (Company hiring · My applications).
+   Reuses the chart styling above; this block adds the compact company dropdown,
+   the top bar + under-chart controls, the breakdown legend, the editable
+   location filter, the application funnel, and the rate/window stat cards.
+   Tokens only — no new palette, so it themes with the phase like everything.
+   ========================================================================= */
+
+/* ---- the top bar: company dropdown + metric toggle + phase zoom ---- */
+.trend-bar {
+  display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-end;
+  margin: 4px 0 14px;
+}
+.trend-ctl { display: flex; flex-direction: column; gap: 5px; }
+.trend-ctl-label {
+  font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--ink-faint);
+}
+
+/* ---- the company dropdown (button + floating panel) ---- */
+.trend-dd-ctl { position: relative; }
+.trend-dd { position: relative; }
+.trend-dd-btn {
+  display: inline-flex; align-items: center; gap: 10px; justify-content: space-between;
+  min-width: 190px; max-width: 280px;
+  font-family: 'Inter', sans-serif; font-size: 14px; color: var(--ink);
+  background: var(--paper-2); border: 1.5px solid var(--rule-2); border-radius: 8px;
+  padding: 8px 12px; cursor: pointer; transition: border-color .12s;
+}
+.trend-dd-btn:hover { border-color: var(--ink); }
+.trend-dd-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.trend-dd.open .trend-dd-btn { border-color: var(--accent); }
+.trend-dd-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trend-dd-caret { color: var(--ink-faint); font-size: 11px; flex: none; }
+
+.trend-dd-panel {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+  width: 320px; max-width: 84vw;
+  background: var(--paper-2); border: 1.5px solid var(--rule-2);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; max-height: 60vh;
+}
+.trend-dd-searchwrap { padding: 10px 10px 6px; }
+.trend-dd-search {
+  width: 100%; box-sizing: border-box;
+  font-family: 'Inter', sans-serif; font-size: 13.5px; color: var(--ink);
+  background: var(--paper); border: 1.5px solid var(--rule-2); border-radius: 8px;
+  padding: 8px 10px; outline: none;
+}
+.trend-dd-search:focus { border-color: var(--accent); }
+.trend-dd-quick {
+  display: flex; align-items: center; gap: 8px; padding: 0 12px 6px;
+}
+.trend-dd-quickbtn {
+  font-family: 'Inter', sans-serif; font-size: 12px; color: var(--accent);
+  background: none; border: none; cursor: pointer; padding: 2px 0;
+}
+.trend-dd-quickbtn:hover { text-decoration: underline; }
+.trend-dd-quicksep { color: var(--ink-faint); font-size: 11px; }
+
+.trend-dd-tree { overflow-y: auto; padding: 2px 12px 6px; }
+.trend-dd-bucket { margin-top: 10px; }
+.trend-dd-bucket:first-child { margin-top: 2px; }
+.trend-dd-blabel, .trend-dd-sublabel, .trend-dd-co {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  font-family: 'Inter', sans-serif;
+}
+.trend-dd-blabel {
+  font-weight: 600; font-size: 13.5px; color: var(--ink); padding: 3px 0;
+}
+.trend-dd-sublabel {
+  font-weight: 500; font-size: 12.5px; color: var(--ink-soft);
+  margin: 5px 0 2px 18px;
+}
+.trend-dd-cos { display: flex; flex-direction: column; gap: 2px; padding-left: 18px; }
+.trend-dd-sub .trend-dd-cos { padding-left: 34px; }
+.trend-dd-co {
+  font-size: 13px; color: var(--ink-soft); padding: 3px 0;
+}
+.trend-dd-co.on, .trend-dd-blabel.on, .trend-dd-sublabel.on { color: var(--ink); }
+.trend-dd-co input, .trend-dd-blabel input, .trend-dd-sublabel input {
+  width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; flex: none;
+}
+.trend-dd-none { font-size: 13px; color: var(--ink-faint); padding: 10px 2px; }
+.trend-dd-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  border-top: 1px solid var(--rule); padding: 10px 12px;
+}
+.trend-dd-count {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-faint);
+}
+.trend-dd-apply {
+  font-family: 'Inter', sans-serif; font-size: 13.5px; font-weight: 500;
+  color: var(--on-accent); background: var(--accent);
+  border: 1.5px solid var(--accent); border-radius: 8px;
+  padding: 6px 16px; cursor: pointer;
+}
+.trend-dd-apply:hover { opacity: .92; }
+.trend-dd-apply:focus-visible { outline: 2.5px solid var(--ink); outline-offset: 2px; }
+
+/* ---- under-chart controls: split (single company) + breakdown toggle ---- */
+.trend-under {
+  display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-end;
+  margin: 2px 0 10px;
+}
+.trend-breakdown-btn {
+  font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500;
+  color: var(--ink); background: var(--paper-2);
+  border: 1.5px solid var(--rule-2); border-radius: 999px;
+  padding: 7px 15px; cursor: pointer; transition: border-color .12s, background .12s;
+}
+.trend-breakdown-btn:hover { border-color: var(--ink); }
+.trend-breakdown-btn.on { background: var(--accent-bg); border-color: var(--accent); color: var(--ink); }
+.trend-breakdown-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+
+/* ---- the breakdown legend (hover to isolate a line) ---- */
+.trend-legend {
+  display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 0 0 12px;
+}
+.trend-legend-item {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: 'Inter', sans-serif; font-size: 12.5px; color: var(--ink-soft);
+  background: var(--paper-2); border: 1.5px solid var(--rule-2); border-radius: 999px;
+  padding: 4px 11px 4px 8px; cursor: default; transition: opacity .15s, border-color .12s;
+}
+.trend-legend-item.total { border-color: var(--rule-2); font-weight: 600; color: var(--ink); }
+.trend-legend-item.dim { opacity: .4; }
+.trend-legend-item:hover { border-color: var(--ink); }
+.trend-legend-swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.trend-legend-name { color: inherit; }
+.trend-legend-val {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: var(--ink-faint);
+}
+
+/* ---- editable location filter (chips + add) — page-level on Trends ---- */
+.trend-loc { min-width: 200px; }
+.trend-loc-page { margin: 2px 0 16px; }
+.trend-loc-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  border: 1.5px solid var(--rule-2); border-radius: 8px;
+  background: var(--paper-2); padding: 5px 7px; min-height: 34px;
+}
+.trend-loc-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: 'Inter', sans-serif; font-size: 12.5px; color: var(--ink);
+  background: var(--accent-bg); border-radius: 999px; padding: 2px 4px 2px 9px;
+}
+.trend-loc-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%; border: none; cursor: pointer;
+  background: none; color: var(--ink-soft); font-size: 15px; line-height: 1;
+}
+.trend-loc-x:hover { color: var(--ink); }
+.trend-loc-empty {
+  font-family: 'Inter', sans-serif; font-size: 12.5px; color: var(--ink-faint);
+  padding: 2px 4px;
+}
+.trend-loc-input {
+  border: none; background: none; outline: none;
+  font-family: 'Inter', sans-serif; font-size: 12.5px; color: var(--ink);
+  min-width: 80px; flex: 1; padding: 2px;
+}
+.trend-loc-reset {
+  align-self: flex-start; margin-top: 5px;
+  font-family: 'Inter', sans-serif; font-size: 11.5px; color: var(--accent);
+  background: none; border: none; cursor: pointer; padding: 0;
+}
+.trend-loc-reset:hover { text-decoration: underline; }
+
+/* ---- the application funnel ---- */
+.funnel {
+  border: 1.5px solid var(--rule-2); border-radius: var(--radius);
+  background: var(--paper-2); padding: 14px 16px; margin-bottom: 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.funnel-row { display: flex; align-items: center; gap: 12px; }
+.funnel-label {
+  font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500;
+  color: var(--ink-soft); width: 78px; flex: none; text-align: right;
+}
+.funnel-track {
+  flex: 1; height: 26px; background: var(--paper);
+  border-radius: 6px; overflow: hidden;
+}
+.funnel-bar {
+  height: 100%; border-radius: 6px; min-width: 2px;
+  transition: width .25s ease;
+}
+.funnel-bar-applied   { background: var(--slate); }
+.funnel-bar-screening { background: var(--accent); }
+.funnel-bar-interview { background: var(--signal); opacity: .82; }
+.funnel-bar-offer     { background: var(--ok); }
+.funnel-val {
+  width: 78px; flex: none; display: flex; align-items: baseline; gap: 7px;
+}
+.funnel-count {
+  font-family: 'IBM Plex Mono', monospace; font-size: 15px; font-weight: 600;
+  color: var(--ink);
+}
+.funnel-pct {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: var(--ink-faint);
+}
+
+/* ---- rate + window stat cards ---- */
+.tracker-stats {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 8px;
+}
+.tracker-stats-h {
+  font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+.stat-cards { display: flex; flex-wrap: wrap; gap: 8px; }
+.stat-card {
+  flex: 1 1 96px; border: 1.5px solid var(--rule-2); border-radius: 8px;
+  background: var(--paper-2); padding: 10px 12px;
+}
+.stat-value {
+  font-family: 'Fraunces', serif; font-size: 22px; font-weight: 600;
+  color: var(--ink); line-height: 1.1;
+}
+.stat-label {
+  font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 500;
+  color: var(--ink-soft); margin-top: 3px;
+}
+.stat-sub {
+  font-family: 'Inter', sans-serif; font-size: 11px; color: var(--ink-faint);
+  margin-top: 1px;
+}
+
+@media (max-width: 560px) {
+  .tracker-stats { grid-template-columns: 1fr; }
+}
+
+/* =========================================================================
+   PHASE G — the app shell: banner, phase switcher, conditional Home.
+   Built on the existing tokens only. Theming by phase TYPE is Phase H; G adds
+   just the minimal cue (the active state's icon highlighted, Home reflects it).
+   ========================================================================= */
+
+/* ---- the hover/focus edge that reveals the banner on Home -------------- */
+#bannerEdge {
+  position: fixed; top: 0; left: 0; right: 0; height: 14px;
+  z-index: 39; cursor: pointer;
+}
+#bannerEdge:focus-visible {
+  outline: 2.5px solid var(--accent); outline-offset: -2px;
+}
+/* A faint persistent handle so a touch/trackpad user sees there's something to
+   pull down — hover is never the ONLY way in (G.1). */
+body.on-home #bannerEdge::after {
+  content: ''; position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+  width: 44px; height: 4px; border-radius: 999px;
+  background: var(--rule-2); opacity: .7;
+  transition: opacity .15s, background .15s;
+}
+body.on-home #bannerEdge:hover::after,
+body.on-home #bannerEdge:focus::after { opacity: 1; background: var(--ink-faint); }
+
+/* ---- the banner -------------------------------------------------------- */
+/* Full-width bar. A 3-column grid puts the nav dead-centre regardless of the
+   side widths: [switcher] [nav (centred)] [cog]. */
+.banner {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 18px;
+  /* Full-bleed bar: the background/border reach the screen edges, while the
+     inner content (switcher · nav · cog) is held to the same max-width as the
+     page and centred, so the nav doesn't sprawl on wide monitors. The side
+     padding matches .wrap's gutters for visual alignment with the content. */
+  width: 100%;
+  padding: 9px max(32px, calc((100% - var(--maxw)) / 2 + 32px));
+  background: var(--paper-2);
+  border-bottom: 1.5px solid var(--rule-2);
+  box-shadow: var(--shadow);
+}
+.banner > .switcher { justify-self: start; }
+.banner > .banner-nav { justify-self: center; }
+.banner > .banner-icon { justify-self: end; }
+
+/* Static (non-Home) banner sticks to the top, full-width. */
+.banner.is-static { position: sticky; top: 0; z-index: 40; }
+/* Revealable (Home) banner slides down over the page. */
+.banner.is-revealable {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 41;
+  transform: translateY(-100%); transition: transform .22s ease;
+}
+.banner.is-revealable.is-open { transform: translateY(0); }
+
+.banner-nav {
+  display: flex; gap: 6px; flex-wrap: wrap; justify-content: center;
+}
+.banner-link {
+  font: inherit; font-size: 13.5px; font-weight: 500;
+  color: var(--ink-soft); background: none; border: none; cursor: pointer;
+  padding: 7px 14px; border-radius: 8px;
+  transition: background .12s, color .12s;
+  white-space: nowrap;
+}
+.banner-link:hover { background: var(--paper); color: var(--ink); }
+.banner-link.on { color: var(--ink); background: var(--paper); font-weight: 600; }
+.banner-link:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+
+.banner-icon {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 8px;
+  background: none; border: 1.5px solid transparent; cursor: pointer;
+  color: var(--ink-soft);
+}
+.banner-icon:hover { color: var(--ink); background: var(--paper); }
+.banner-icon.on { color: var(--ink); border-color: var(--rule-2); background: var(--paper); }
+.banner-icon:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.banner-icon .glyph { width: 19px; height: 19px; }
+
+/* ---- the phase switcher: a dropdown at top-left ------------------------ */
+.switcher { position: relative; flex: none; }
+
+/* The always-visible trigger: current state's glyph + name + caret. */
+.switch-trigger {
+  display: inline-flex; align-items: center; gap: 8px;
+  font: inherit; font-size: 13.5px; font-weight: 500; color: var(--ink);
+  background: var(--paper); border: 1.5px solid var(--rule-2);
+  border-radius: 9px; padding: 6px 10px 6px 11px; cursor: pointer;
+  transition: border-color .14s, background .14s;
+}
+.switch-trigger:hover { border-color: var(--ink-faint); }
+.switch-trigger:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.switch-trigger .glyph { width: 16px; height: 16px; flex: none; }
+.switch-trigger .switch-label { line-height: 1; }
+.switch-trigger .caret-glyph {
+  width: 13px; height: 13px; color: var(--ink-faint); margin-left: 1px;
+  transition: transform .18s ease;
+}
+.switcher.open .switch-trigger .caret-glyph { transform: rotate(180deg); }
+
+/* The trigger glyph takes the current state's colour, echoing the spine. */
+.switch-trigger.is-active  .glyph { color: var(--accent); }
+.switch-trigger.is-casual  .glyph { color: var(--slate); }
+.switch-trigger.is-dormant .glyph { color: var(--ink-faint); }
+/* Active = live: a gentle pulse on the dot (reduced-motion respected below). */
+.switch-trigger.is-active .glyph circle:last-child {
+  transform-origin: center; animation: switchPulse 2.4s ease-in-out infinite;
+}
+@keyframes switchPulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+
+/* The dropdown menu. Hidden by default; revealed with a smooth transition when
+   .switcher.open (hover, focus, or click). */
+.switch-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 45;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 168px; padding: 6px;
+  background: var(--paper-2); border: 1.5px solid var(--rule-2);
+  border-radius: 10px; box-shadow: var(--shadow);
+  opacity: 0; transform: translateY(-6px) scaleY(.98); transform-origin: top;
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+}
+/* An invisible bridge over the 6px gap so moving the cursor from the trigger
+   into the menu never crosses "empty" space (keeps hover continuous). */
+.switch-menu::before {
+  content: ''; position: absolute; left: 0; right: 0; top: -8px; height: 8px;
+}
+.switcher.open .switch-menu { opacity: 1; transform: translateY(0) scaleY(1); pointer-events: auto; }
+
+.switch-item {
+  display: flex; align-items: center; gap: 9px;
+  font: inherit; font-size: 13.5px; font-weight: 500; color: var(--ink-soft);
+  background: none; border: 1.5px solid transparent; border-radius: 7px;
+  cursor: pointer; padding: 8px 10px; text-align: left;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.switch-item .glyph { width: 16px; height: 16px; flex: none; }
+.switch-item .switch-label { flex: 1; line-height: 1; }
+.switch-item:hover { background: var(--paper); color: var(--ink); }
+.switch-item:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+.switch-item.is-active  .glyph { color: var(--accent); }
+.switch-item.is-casual  .glyph { color: var(--slate); }
+.switch-item.is-dormant .glyph { color: var(--ink-faint); }
+/* The CURRENT state is clearly marked: filled background, ink text, a subtle
+   border, and a weight bump — no text tag needed. */
+.switch-item.on {
+  color: var(--ink); font-weight: 600;
+  background: var(--paper); border-color: var(--rule-2);
+}
+/* ---- the conditional Home page ----------------------------------------- */
+/* Claude.ai-style: the hero sits centred in the viewport, text and actions
+   centre-aligned. No masthead anywhere; the banner reveals from the top edge. */
+.home-wrap {
+  min-height: calc(100vh - 96px);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  text-align: center;
+  padding: 24px 0;
+}
+.home-hero {
+  width: 100%; max-width: 640px;
+}
+.home-eyebrow {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint);
+  margin: 0 0 12px;
+}
+.home-q {
+  font-family: 'Fraunces', serif; font-weight: 500; font-size: 34px;
+  line-height: 1.12; letter-spacing: -0.01em; margin: 0 0 14px;
+}
+.home-sub {
+  font-size: 15.5px; color: var(--ink-soft); line-height: 1.55;
+  max-width: 520px; margin: 0 auto 28px;
+}
+.home-actions {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  align-items: center; justify-content: center;
+}
+.home-foot {
+  font-size: 13.5px; color: var(--ink-faint); line-height: 1.5;
+  margin: 24px auto 0; max-width: 520px;
+}
+.home-foot b { color: var(--ink-soft); font-weight: 600; }
+.home-lastreport { margin: 20px auto 0; }
+
+@media (max-width: 620px) {
+  .home-q { font-size: 27px; }
+  .home-wrap { min-height: calc(100vh - 20px); padding: 28px 0; }
+}
+
+/* ---- appearance control (H) — Light / Dark / System segmented buttons -- */
+.appearance-seg {
+  display: inline-flex; border: 1.5px solid var(--rule-2); border-radius: 9px;
+  overflow: hidden; margin-top: 4px;
+}
+.appearance-seg button {
+  font: inherit; font-size: 13px; font-weight: 500;
+  padding: 8px 16px; border: none; background: transparent; color: var(--ink-soft);
+  cursor: pointer; display: inline-flex; align-items: center; gap: 7px;
+  border-right: 1.5px solid var(--rule-2);
+}
+.appearance-seg button:last-child { border-right: none; }
+.appearance-seg button:hover { background: var(--paper); color: var(--ink); }
+.appearance-seg button.on { background: var(--accent); color: var(--on-accent); }
+.appearance-seg button:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+.appearance-seg .glyph { width: 15px; height: 15px; }
+
+/* ===========================================================================
+   MANAGEMENT CENTER  (Phase I)
+   Two-column board (buckets · companies), bucket rows, ordering, the tier-3
+   help page, and sub-bucket mode (drop zones + draggable cards). Everything
+   here paints from the theme tokens so it inherits all six combinations.
+   =========================================================================== */
+
+.mc-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 20px;
+}
+
+.mc-board {
+  display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 22px;
+  align-items: start;
+}
+
+.mc-col { min-width: 0; }
+.mc-col-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.mc-col-head h3 {
+  font-family: 'Fraunces', serif; font-weight: 500; font-size: 17px; margin: 0;
+}
+.mc-hint { color: var(--ink-faint); font-size: 13px; line-height: 1.5; }
+
+/* left column — bucket rows */
+.mc-buckets { border-right: 1px solid var(--rule); padding-right: 20px; }
+.mc-bucket-row {
+  display: flex; align-items: center; gap: 6px;
+  border-radius: 9px; margin-bottom: 4px; padding: 2px;
+  border: 1.5px solid transparent;
+}
+.mc-bucket-row.on { background: var(--accent-bg); border-color: var(--accent); }
+.mc-bucket-row.muted-row { opacity: .8; }
+.mcb-main, .mc-bucket-row > .mcb-main {
+  flex: 1; display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; background: transparent; border: none; cursor: pointer;
+  font: inherit; color: var(--ink); text-align: left; padding: 8px 8px; border-radius: 7px;
+}
+.mcb-main:hover { background: var(--paper-2); }
+.mcb-name { font-weight: 500; font-size: 14.5px; }
+.mcb-count {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+  color: var(--ink-faint); flex: none;
+}
+.mcb-fixed { font-size: 11.5px; color: var(--ink-faint); padding-right: 8px; }
+.mcb-actions { display: flex; gap: 2px; flex: none; padding-right: 4px; }
+/* the "All companies" pseudo-row is itself a button */
+button.mc-bucket-row {
+  width: 100%; background: transparent; cursor: pointer; font: inherit;
+  color: var(--ink); padding: 8px; justify-content: space-between;
+}
+button.mc-bucket-row:hover { background: var(--paper-2); }
+
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; border-radius: 6px;
+  background: transparent; border: 1px solid transparent; cursor: pointer;
+  color: var(--ink-faint); font-size: 17px; line-height: 1;
+}
+.icon-btn:hover { background: var(--paper); border-color: var(--rule-2); color: var(--ink); }
+.icon-btn.danger:hover { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
+.icon-btn .glyph { width: 15px; height: 15px; }
+.icon-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 1px; }
+
+/* right column — company ordering */
+.mc-order { display: inline-flex; align-items: center; gap: 6px; }
+.mc-order-label { font-size: 12px; color: var(--ink-faint); margin-right: 2px; }
+.mc-order-btn {
+  font: inherit; font-size: 12.5px; padding: 5px 11px; cursor: pointer;
+  border: 1.5px solid var(--rule-2); border-radius: 99px;
+  background: var(--paper); color: var(--ink-soft);
+}
+.mc-order-btn:hover { border-color: var(--ink-faint); }
+.mc-order-btn.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.mc-order-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+
+.mc-clear {
+  background: transparent; border: none; cursor: pointer; font: inherit;
+  color: var(--accent); font-size: 13px; padding: 0 0 12px;
+}
+.mc-clear:hover { text-decoration: underline; }
+
+/* a bucket tag on a company row (reuses .tag sizing, themed colour) */
+.tag.bucket { background: var(--accent-bg); color: var(--accent); }
+
+.empty.small { padding: 28px 0; }
+.empty.small p { margin: 0; }
+
+/* checkbox member-picker (create bucket) */
+.check-list {
+  max-height: 240px; overflow-y: auto; border: 1.5px solid var(--rule-2);
+  border-radius: 8px; padding: 6px;
+}
+.check-row {
+  display: flex; align-items: center; gap: 10px; padding: 7px 8px;
+  border-radius: 6px; cursor: pointer; font-size: 14px;
+}
+.check-row:hover { background: var(--paper); }
+.check-row input { accent-color: var(--accent); width: 16px; height: 16px; }
+
+/* ---- Tier-3 help page ------------------------------------------------- */
+.help-card {
+  background: var(--accent-bg); border: 1.5px solid var(--accent);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 22px;
+}
+.help-lead { margin: 0; color: var(--ink); font-size: 15px; line-height: 1.55; }
+.help-block { margin-bottom: 18px; }
+.help-block h3 {
+  font-family: 'Fraunces', serif; font-weight: 500; font-size: 16px;
+  margin: 0 0 8px;
+}
+.help-block p { color: var(--ink-soft); font-size: 14px; line-height: 1.6; margin: 0 0 10px; }
+.help-block ul { margin: 0; padding-left: 20px; color: var(--ink-soft); font-size: 14px; line-height: 1.65; }
+.help-block li { margin-bottom: 6px; }
+.help-url { font-size: 13px; margin: 4px 0 0; word-break: break-all; }
+.help-url a { color: var(--accent); }
+
+/* ---- sub-bucket mode -------------------------------------------------- */
+.sub-grid {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+.sub-zone {
+  border: 1.5px solid var(--rule-2); border-radius: var(--radius);
+  background: var(--paper-2); display: flex; flex-direction: column;
+}
+.sub-zone-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 13px; border-bottom: 1px solid var(--rule);
+}
+.sz-name { font-weight: 600; font-size: 14px; }
+.sz-count { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-faint); }
+.sub-drop {
+  flex: 1; min-height: 90px; padding: 10px; display: flex;
+  flex-direction: column; gap: 8px; border-radius: 0 0 var(--radius) var(--radius);
+  transition: background .12s ease, box-shadow .12s ease;
+}
+.sub-drop.over { background: var(--accent-bg); box-shadow: inset 0 0 0 2px var(--accent); }
+.sub-empty {
+  color: var(--ink-faint); font-size: 12.5px; text-align: center;
+  padding: 16px 0; border: 1.5px dashed var(--rule-2); border-radius: 8px;
+}
+.sub-card {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: var(--paper); border: 1.5px solid var(--rule-2); border-radius: 8px;
+  padding: 9px 11px; cursor: grab;
+}
+.sub-card:active { cursor: grabbing; }
+.sub-card.dragging { opacity: .45; }
+.sc-name { flex: 1 1 auto; font-size: 13.5px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.move-to {
+  font: inherit; font-size: 11.5px; padding: 3px 6px; flex: 0 1 auto;
+  max-width: 42%; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--ink-soft); background: var(--paper-2);
+  border: 1px solid var(--rule-2); border-radius: 6px; cursor: pointer;
+}
+
+/* responsive: stack the board on narrow viewports */
+@media (max-width: 720px) {
+  .mc-board { grid-template-columns: 1fr; }
+  .mc-buckets { border-right: none; padding-right: 0; border-bottom: 1px solid var(--rule); padding-bottom: 16px; }
+}
+
+/* =======================================================================
+   PHASE J — Guide (Tier-3 field guide) + History (past phases)
+   All colours are tokens so the six H theme combinations inherit cleanly.
+   ======================================================================= */
+
+/* Guide — the inspection steps (ordered) and inline URL-fragment chips. */
+.guide-steps { margin: 8px 0 6px; padding-left: 22px; }
+.guide-steps li {
+  font-size: 14px; color: var(--ink-soft); line-height: 1.65; margin-bottom: 12px;
+}
+.guide-steps li b { color: var(--ink); font-weight: 600; }
+.guide-frag {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;
+  background: var(--paper-2); color: var(--ink); border: 1px solid var(--rule);
+  border-radius: 5px; padding: 1px 6px;
+}
+
+/* History — the phase rows are buttons (clickable), unlike the read-only
+   company rows they're modelled on. Reset button chrome, add an affordance. */
+/* History row = flex container holding a clickable main button + a trash icon.
+   (Was a single <button>; split so the trash can sit beside the drill-in.) */
+.history-row {
+  display: flex; align-items: stretch; gap: 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.history-row:last-child { border-bottom: none; }
+.history-row.confirming { background: var(--danger-bg); }
+.history-row-main {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  text-align: left; background: none; border: none; cursor: pointer; font: inherit;
+  color: inherit; padding: 14px 4px 14px 0; transition: background-color .12s ease;
+  border-radius: 6px;
+}
+.history-row-main:hover { background: var(--paper-2); }
+.history-row-main:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px;
+}
+.history-trash { align-self: center; flex: none; }
+/* Inline confirm strip shown on a row when its trash is tapped. */
+.row-confirm {
+  flex: 1; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 4px; flex-wrap: wrap;
+}
+.row-confirm-text { font-size: 13.5px; color: var(--ink-soft); flex: 1; min-width: 180px; }
+.row-confirm-actions { display: flex; gap: 8px; flex: none; }
+.history-chev {
+  font-size: 22px; line-height: 1; color: var(--ink-faint); flex: none;
+  padding-left: 8px;
+}
+/* Trash in the phase-detail header sits after the status pill. */
+.sec-head-trash { margin-left: auto; flex: none; align-self: center; }
+
+/* History drill-in — the per-company role count. */
+.history-count {
+  font-family: 'IBM Plex Mono', monospace; font-size: 13px;
+  color: var(--ink-soft); flex: none; white-space: nowrap;
+}
+.history-count b { color: var(--ink); font-weight: 600; }
+
+/* ===========================================================================
+   PHASE K — JOBS PAGE
+   The run picker, the two-pane results, the star, and the Saved tab. Every
+   colour is a token so it inherits all six H theme combinations. Reuses
+   .job/.j-main/.j-title/.j-sub/.marker/.tag, .company-block, .btn, .empty,
+   .tally, .sec-head, .backlink, .seg sizing.
+   =========================================================================== */
+
+/* ---- tabs (Check · Saved) --------------------------------------------- */
+.jobs-tabs {
+  display: flex; gap: 4px; margin-bottom: 22px;
+  border-bottom: 1px solid var(--rule);
+}
+.jobs-tab {
+  appearance: none; background: none; border: none; cursor: pointer;
+  font: inherit; font-weight: 500; font-size: 15px; color: var(--ink-faint);
+  padding: 10px 16px; position: relative; display: inline-flex; align-items: center;
+  gap: 8px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.jobs-tab:hover { color: var(--ink-soft); }
+.jobs-tab.on { color: var(--ink); border-bottom-color: var(--accent); }
+.jobs-tab:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.tab-badge {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  background: var(--accent-bg); color: var(--accent);
+  padding: 1px 7px; border-radius: 999px; line-height: 1.5;
+}
+
+/* ---- the landing — centred, Home-style (no box) ----------------------- */
+.jobs-landing {
+  width: 100%;
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center; padding: 40px 0 24px;
+}
+.jobs-hero { width: 100%; max-width: 640px; }
+/* The last-checked headline reads as an instrument value, so it keeps the mono
+   face (the app's convention for dates/numbers) rather than the serif Home uses
+   for prose. Everything else mirrors .home-hero spacing. */
+.jl-headline {
+  font-family: 'IBM Plex Mono', monospace; font-weight: 500;
+  font-size: 28px; letter-spacing: 0; margin: 0 0 24px;
+}
+.jl-headline.muted { color: var(--ink-faint); }
+
+/* Home-style larger buttons for the landing's primary actions. */
+.btn.big { padding: 12px 22px; font-size: 15px; }
+
+@media (max-width: 620px) {
+  .jl-headline { font-size: 22px; }
+  .jobs-landing .home-actions .btn.big { flex: 1; }
+}
+
+/* ---- the picker ------------------------------------------------------- */
+.pick-runbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 12px 16px; margin-bottom: 18px;
+  background: var(--paper-2); border: 1px solid var(--rule-2);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.pick-runbar-info { font-size: 14px; color: var(--ink-soft); }
+.pick-count {
+  font-family: 'IBM Plex Mono', monospace; font-weight: 600;
+  color: var(--accent); font-size: 16px;
+}
+.btn.is-disabled { opacity: .4; cursor: not-allowed; pointer-events: none; }
+
+.pick-buckets { display: grid; gap: 10px; }
+.pick-bucket {
+  appearance: none; cursor: pointer; font: inherit; text-align: left;
+  display: flex; align-items: center; gap: 14px;
+  padding: 16px 18px; background: var(--paper-2);
+  border: 1px solid var(--rule); border-radius: var(--radius);
+}
+.pick-bucket:hover { border-color: var(--accent); }
+.pick-bucket:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.pick-bucket .pb-name { font-weight: 600; font-size: 16px; flex: 1; }
+.pick-bucket .pb-meta {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-faint);
+}
+.pick-bucket .pb-go { color: var(--accent); font-size: 18px; }
+
+.pick-detail { display: grid; gap: 18px; }
+.pick-bucket-head {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding-bottom: 6px; border-bottom: 1px solid var(--rule);
+}
+.pbh-title { font-family: 'Fraunces', serif; font-size: 22px; font-weight: 600; flex: 1; }
+
+.pick-sub {
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  overflow: hidden; background: var(--paper-2);
+}
+.pick-sub-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 16px; background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+}
+.pick-sub-head .ps-name { font-weight: 600; font-size: 14px; }
+
+.pick-company {
+  appearance: none; cursor: pointer; font: inherit; text-align: left; width: 100%;
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 16px; background: none; border: none;
+  border-bottom: 1px solid var(--rule);
+}
+.pick-company:last-child { border-bottom: none; }
+.pick-company:hover { background: var(--accent-bg); }
+.pick-company.is-on { background: var(--accent-bg); }
+.pick-company:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+.pick-company .pc-name { flex: 1; font-size: 15px; }
+.pick-company.is-unrunnable { cursor: default; opacity: .55; }
+.pick-company.is-unrunnable:hover { background: none; }
+.pick-company .pc-note {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--ink-faint);
+}
+
+/* the custom checkbox */
+.check-box {
+  flex: none; width: 20px; height: 20px; border-radius: 6px;
+  border: 2px solid var(--rule-2); background: var(--paper);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.check-box.small { width: 16px; height: 16px; border-radius: 5px; }
+.check-box.is-on { background: var(--accent); border-color: var(--accent); }
+.check-box.is-disabled { opacity: .5; }
+.check-tick { width: 13px; height: 13px; color: var(--on-accent); }
+.check-box.small .check-tick { width: 10px; height: 10px; }
+
+.select-all {
+  appearance: none; cursor: pointer; font: inherit; font-size: 12.5px;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 10px; background: none; color: var(--ink-soft);
+  border: 1px solid var(--rule-2); border-radius: 999px;
+}
+.select-all:hover { border-color: var(--ink-faint); color: var(--ink); }
+.select-all.is-on { color: var(--accent); border-color: var(--accent); }
+.select-all:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+
+/* ---- the two-pane results --------------------------------------------- */
+.run-twopane { display: grid; grid-template-columns: minmax(220px, 25%) 1fr; gap: 24px; align-items: start; }
+.run-rail-wrap { position: sticky; top: 16px; }
+.run-rail { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
+.rail-item {
+  appearance: none; cursor: pointer; font: inherit; text-align: left; width: 100%;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px; background: none; border: none;
+  border-left: 2px solid transparent; border-radius: 0 6px 6px 0;
+}
+.rail-item:hover { background: var(--paper-2); }
+.rail-item.on { background: var(--accent-bg); border-left-color: var(--accent); }
+.rail-item:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+.rail-item.is-quiet { cursor: default; opacity: .55; }
+.rail-item.is-quiet:hover { background: none; }
+.rail-item .rail-name { font-weight: 500; font-size: 14px; }
+.rail-item.on .rail-name { color: var(--ink); }
+.rail-item .rail-meta {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: var(--ink-faint);
+}
+.rail-overview .rail-name { font-weight: 600; }
+.run-rail-wrap .backlink { margin-bottom: 4px; }
+
+.run-pane { min-width: 0; }
+.pane-head { margin-bottom: 14px; }
+.pane-head h2 {
+  font-family: 'Fraunces', serif; font-size: 24px; font-weight: 600; margin: 0 0 4px;
+}
+
+/* a "current, not new" role marker — quiet ink dot */
+.job.is-current .marker { background: var(--rule-2); }
+
+/* ---- the star --------------------------------------------------------- */
+.star {
+  appearance: none; cursor: pointer; background: none; border: none;
+  flex: none; padding: 4px; margin: -4px -4px -4px 4px; line-height: 0;
+  color: var(--ink-faint); border-radius: 6px;
+}
+.star:hover { color: var(--accent); }
+.star.is-on { color: var(--accent); }
+.star:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 1px; }
+.star-glyph { width: 18px; height: 18px; }
+
+/* ---- the Saved tab ---------------------------------------------------- */
+/* Full use of the width, but bounded so the row's actions stay near its text
+   rather than flung to a distant page edge (avoids a cavernous middle gap). */
+.saved-wrap { width: 100%; max-width: 1000px; }
+.saved-sort {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px;
+}
+.saved-sort .ss-label {
+  font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint);
+  margin-right: 4px;
+}
+.seg-btn {
+  appearance: none; cursor: pointer; font: inherit; font-size: 13px;
+  padding: 6px 12px; background: none; color: var(--ink-soft);
+  border: 1px solid var(--rule-2); border-radius: 999px;
+}
+.seg-btn:hover { border-color: var(--ink-faint); color: var(--ink); }
+.seg-btn.on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.seg-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+
+.saved-row { align-items: center; }
+.saved-actions { flex: none; display: flex; gap: 8px; align-items: center; }
+.btn.ghost.small.danger { color: var(--danger); border-color: var(--danger-border); }
+.btn.ghost.small.danger:hover { background: var(--danger-bg); border-color: var(--danger); }
+
+/* ---- responsive: stack the two-pane on narrow screens ----------------- */
+@media (max-width: 720px) {
+  .run-twopane { grid-template-columns: 1fr; }
+  .run-rail-wrap { position: static; }
+  .run-rail { flex-direction: row; flex-wrap: wrap; }
+  .rail-item { border-left: none; border-bottom: 2px solid transparent; border-radius: 6px; }
+  .rail-item.on { border-left: none; border-bottom-color: var(--accent); }
+}
+
+/* ===========================================================================
+   APPLICATION TRACKER (Phase L)
+   The table, the status pills/menu, the Yes/No toggle, the rounds stepper, the
+   inline notes, the filter bar, the manual-add modal, and the L.10 run-report
+   "gone" alert. Layout/structure colours use H tokens so they inherit all six
+   themes; the 7 STATUS colours are FIXED semantic values (meaning, not
+   decoration — like --removed/--stretch/--ok), constant across every theme.
+   =========================================================================== */
+
+/* Fixed status palette — the user's screenshot colours. Defined once; never
+   themed. Each status has a text/dot colour and a soft background for the pill. */
+:root {
+  --st-applied:     #6E6E6E;  --st-applied-bg:   #6e6e6e22;
+  --st-screening:   #3B82C4;  --st-screening-bg: #3b82c422;
+  --st-interview:   #8B5CA6;  --st-interview-bg: #8b5ca622;
+  --st-ghosted:     #7C7C7C;  --st-ghosted-bg:   #7c7c7c22;
+  --st-offer:       #3E9E6E;  --st-offer-bg:     #3e9e6e22;
+  --st-rejected:    #C2483D;  --st-rejected-bg:  #c2483d22;
+  --st-withdrawn:   #B07A2E;  --st-withdrawn-bg: #b07a2e22;
+}
+
+.tracker-wrap { margin-top: 0.4rem; }
+
+/* ---- controls: filters (checkbox dropdowns) + sort ---- */
+.tracker-controls {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 0.8rem; margin: 0.6rem 0 1rem;
+}
+.tracker-filters, .tracker-sort {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+}
+.tracker-filters .tf-label, .tracker-sort .tf-label {
+  font-size: 0.82rem; color: var(--ink-faint); text-transform: uppercase;
+  letter-spacing: 0.04em; margin-right: 0.1rem;
+}
+
+/* checkbox-dropdown trigger button */
+.tf-drop {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  background: var(--paper-2); color: var(--ink);
+  border: 1px solid var(--rule-2); border-radius: 8px;
+  padding: 0.4rem 0.7rem; font: inherit; font-size: 0.9rem; cursor: pointer;
+  line-height: 1;
+}
+.tf-drop.on { border-color: var(--accent); color: var(--accent); }
+.tf-drop .tf-caret { font-size: 0.7rem; opacity: 0.65; }
+
+/* the checkbox panel */
+.cb-panel {
+  position: absolute; z-index: 61; background: var(--paper-2);
+  border: 1px solid var(--rule-2); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 0.4rem; min-width: 180px;
+  max-height: 320px; overflow: auto;
+}
+.cb-item {
+  display: flex; align-items: center; gap: 0.5rem; width: 100%;
+  padding: 0.4rem 0.5rem; border-radius: 7px; cursor: pointer; font-size: 0.9rem;
+  color: var(--ink);
+}
+.cb-item:hover { background: var(--rule); }
+.cb-item input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; margin: 0; }
+
+/* sort: select + direction toggle */
+.tf-select {
+  appearance: none; background: var(--paper-2); color: var(--ink);
+  border: 1px solid var(--rule-2); border-radius: 8px;
+  padding: 0.4rem 0.7rem; font: inherit; font-size: 0.9rem; cursor: pointer;
+  line-height: 1;
+}
+.tf-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tf-dir {
+  width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--rule-2);
+  background: var(--paper-2); color: var(--ink); font-size: 1rem; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+}
+.tf-dir:hover { background: var(--rule); }
+
+/* ---- the table: rebalanced columns, every cell vertically centered ---- */
+.tracker-table { display: flex; flex-direction: column; gap: 1px;
+  background: var(--rule); border: 1px solid var(--rule); border-radius: 12px;
+  overflow: hidden; }
+.tr-row {
+  display: grid;
+  grid-template-columns:
+    minmax(110px, 1.3fr)   /* title */
+    minmax(96px, 1fr)      /* company */
+    minmax(94px, 0.85fr)   /* date */
+    minmax(118px, 0.95fr)  /* status */
+    minmax(86px, 0.6fr)    /* screening */
+    minmax(86px, 0.6fr)    /* rounds */
+    minmax(180px, 2fr)     /* notes */
+    minmax(96px, 0.7fr);   /* actions — fits the Remove button */
+  gap: 1px; background: var(--rule); align-items: stretch;
+}
+.tr-cell {
+  background: var(--paper-2); padding: 0.6rem 0.7rem;
+  display: flex; align-items: center;        /* vertical centering */
+  font-size: 0.92rem; min-width: 0;
+}
+.tr-head .tr-cell {
+  background: var(--paper); color: var(--ink-faint); font-size: 0.74rem;
+  text-transform: uppercase; letter-spacing: 0.03em; font-weight: 600;
+  white-space: nowrap; overflow: visible;    /* don't clip "Screening" */
+}
+.tr-title { flex-direction: column; align-items: flex-start; gap: 0.2rem;
+  justify-content: center; word-break: break-word; }
+.tr-title-text { line-height: 1.3; }
+.tr-title a { color: var(--accent); text-decoration: none; }
+.tr-title a:hover { text-decoration: underline; }
+.tr-date { font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.tr-actions { justify-content: flex-end; }
+.tr-actions .btn { white-space: nowrap; padding: 0.34rem 0.6rem; font-size: 0.82rem; }
+.tr-gone {
+  font-size: 0.7rem; color: var(--removed); border: 1px solid var(--removed);
+  border-radius: 6px; padding: 0.04rem 0.34rem; line-height: 1.4; align-self: flex-start;
+}
+
+/* ---- status pill + menu ---- */
+.status-pill {
+  display: inline-flex; align-items: center; gap: 0.32rem;
+  border: 1px solid transparent; border-radius: 999px;
+  padding: 0.24rem 0.5rem 0.24rem 0.45rem; font: inherit; font-size: 0.84rem;
+  font-weight: 600; cursor: pointer; background: var(--st-applied-bg);
+  color: var(--st-applied); line-height: 1;
+}
+.status-pill .st-caret { font-size: 0.7rem; opacity: 0.7; }
+.st-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor;
+  flex: none; }
+.st-applied   { color: var(--st-applied);   background: var(--st-applied-bg); }
+.st-screening { color: var(--st-screening); background: var(--st-screening-bg); }
+.st-interview { color: var(--st-interview); background: var(--st-interview-bg); }
+.st-ghosted   { color: var(--st-ghosted);   background: var(--st-ghosted-bg); }
+.st-offer     { color: var(--st-offer);     background: var(--st-offer-bg); }
+.st-rejected  { color: var(--st-rejected);  background: var(--st-rejected-bg); }
+.st-withdrawn { color: var(--st-withdrawn); background: var(--st-withdrawn-bg); }
+/* dot tint when used as a bare class (filter checkbox swatch) */
+.st-dot.st-applied{background:var(--st-applied)} .st-dot.st-screening{background:var(--st-screening)}
+.st-dot.st-interview{background:var(--st-interview)} .st-dot.st-ghosted{background:var(--st-ghosted)}
+.st-dot.st-offer{background:var(--st-offer)} .st-dot.st-rejected{background:var(--st-rejected)}
+.st-dot.st-withdrawn{background:var(--st-withdrawn)}
+
+.menu-veil { position: fixed; inset: 0; z-index: 60; }
+.status-menu {
+  position: absolute; z-index: 61; background: var(--paper-2);
+  border: 1px solid var(--rule-2); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 0.35rem; min-width: 160px;
+}
+.sm-group { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--ink-faint); padding: 0.3rem 0.5rem 0.15rem; }
+.sm-item {
+  display: flex; align-items: center; gap: 0.4rem; width: 100%;
+  border: none; background: none; font: inherit; font-size: 0.88rem;
+  padding: 0.36rem 0.5rem; border-radius: 7px; cursor: pointer; text-align: left;
+  color: var(--ink);
+}
+.sm-item:hover { background: var(--rule); }
+.sm-item .st-dot { background: currentColor; }
+.sm-item.st-applied .st-dot   { color: var(--st-applied); }
+.sm-item.st-screening .st-dot { color: var(--st-screening); }
+.sm-item.st-interview .st-dot { color: var(--st-interview); }
+.sm-item.st-ghosted .st-dot   { color: var(--st-ghosted); }
+.sm-item.st-offer .st-dot     { color: var(--st-offer); }
+.sm-item.st-rejected .st-dot  { color: var(--st-rejected); }
+.sm-item.st-withdrawn .st-dot { color: var(--st-withdrawn); }
+
+/* ---- Yes/No screening toggle ---- */
+.yn-toggle {
+  border: 1px solid var(--rule-2); background: var(--paper); color: var(--ink-soft);
+  border-radius: 999px; padding: 0.22rem 0.7rem; font: inherit; font-size: 0.82rem;
+  font-weight: 600; cursor: pointer; min-width: 52px; line-height: 1;
+}
+.yn-toggle.on { background: var(--accent); color: var(--on-accent, #fff);
+  border-color: var(--accent); }
+
+/* ---- rounds stepper ---- */
+.rounds { display: inline-flex; align-items: center; gap: 0.35rem; }
+.rnd-btn {
+  width: 24px; height: 24px; border-radius: 6px; border: 1px solid var(--rule-2);
+  background: var(--paper); color: var(--ink); font: inherit; line-height: 1;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.rnd-btn:hover { background: var(--rule); }
+.rnd-n { min-width: 1.2ch; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* ---- notes: preview snippet + Edit button ---- */
+.notes-cell { display: flex; align-items: center; gap: 0.5rem; width: 100%; }
+.notes-preview {
+  flex: 1; min-width: 0; font-size: 0.86rem; color: var(--ink-soft);
+  line-height: 1.35; overflow: hidden; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.notes-preview.empty-note { color: var(--ink-faint); font-style: italic; }
+
+/* ---- rich-text notes editor (modal) ---- */
+.notes-modal { max-width: 640px; width: 92vw; }
+.notes-toolbar {
+  display: flex; align-items: center; gap: 0.3rem; margin: 0.4rem 0 0.5rem;
+  padding-bottom: 0.5rem; border-bottom: 1px solid var(--rule);
+}
+.ne-tool {
+  min-width: 34px; height: 32px; padding: 0 0.5rem; border-radius: 7px;
+  border: 1px solid var(--rule-2); background: var(--paper); color: var(--ink);
+  font: inherit; font-size: 0.86rem; cursor: pointer; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.ne-tool:hover { background: var(--rule); }
+/* Active/toggled-on state — this was missing, so the JS toggle had no visible
+   effect even though it was correctly adding the .on class. */
+.ne-tool.on {
+  background: var(--accent); color: var(--on-accent, #fff);
+  border-color: var(--accent);
+}
+.ne-sep { width: 1px; height: 22px; background: var(--rule-2); margin: 0 0.25rem; }
+.notes-editor {
+  min-height: 240px; max-height: 50vh; overflow: auto;
+  border: 1px solid var(--rule-2); border-radius: 10px;
+  padding: 0.7rem 0.85rem; background: var(--paper); color: var(--ink);
+  font-size: 0.95rem; line-height: 1.5; outline: none;
+}
+.notes-editor:focus-visible { border-color: var(--accent); }
+.notes-editor ul, .notes-editor ol { margin: 0.3rem 0 0.3rem 1.3rem; }
+.notes-editor p { margin: 0 0 0.5rem; }
+
+/* ---- L.10 run-report "gone" alert ---- */
+.gone-alert {
+  border: 1px solid var(--stretch); background: color-mix(in srgb, var(--stretch) 8%, var(--paper-2));
+  border-radius: 10px; padding: 0.7rem 0.9rem; margin: 0.4rem 0 1rem;
+}
+.gone-head { font-weight: 600; color: var(--ink); margin-bottom: 0.3rem; }
+.gone-list { margin: 0.2rem 0 0.4rem; padding-left: 1.1rem; }
+.gone-list a { color: var(--accent); text-decoration: none; }
+.gone-list a:hover { text-decoration: underline; }
+.gone-foot { font-size: 0.84rem; }
+
+/* ---- responsive: stack the table on narrow screens ---- */
+@media (max-width: 860px) {
+  .tr-head { display: none; }
+  .tr-row { grid-template-columns: 1fr 1fr; padding: 0.3rem 0; }
+  .tr-cell { background: var(--paper-2); }
+  .tr-title { grid-column: 1 / -1; }
+  .tr-notes { grid-column: 1 / -1; }
+  .tr-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .tracker-controls { flex-direction: column; align-items: flex-start; }
+}
+
+/* ============================================================ */
+/* Phase M — Jobs filter panel + flag tags on tracker rows.     */
+/* All themed via the existing tokens (--paper/-2, --ink*,       */
+/* --rule*, --accent*); no new colour variables introduced.     */
+/* ============================================================ */
+
+.filter-panel {
+  margin: 0 0 1rem 0;
+  border: 1.5px solid var(--rule-2);
+  border-radius: 12px;
+  background: var(--paper-2);
+  overflow: hidden;
+}
+
+.filter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.7rem 0.9rem;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+  font: inherit;
+}
+.filter-toggle:hover { background: var(--paper); }
+.filter-toggle .ft-label { font-weight: 600; }
+.filter-toggle .ft-summary { color: var(--ink-soft); font-size: 0.9rem; flex: 1; }
+.filter-toggle .ft-tweaked {
+  font-size: 0.78rem;
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.filter-toggle .ft-caret { color: var(--ink-faint); font-size: 0.8rem; }
+
+.filter-group {
+  padding: 0.8rem 0.9rem;
+  border-top: 1px solid var(--rule);
+}
+.fg-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 0.5rem; }
+.fg-label { font-weight: 600; font-size: 0.95rem; }
+.fg-hint { color: var(--ink-faint); font-size: 0.8rem; }
+
+.filter-panel .chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+.filter-panel .chip-row:empty { display: none; }
+.filter-panel .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 3px 6px 3px 10px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+.filter-panel .chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px; height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0.7;
+}
+.filter-panel .chip-x:hover { opacity: 1; }
+
+.fg-add { display: flex; gap: 0.5rem; }
+.filter-input {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1.5px solid var(--rule-2);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+}
+.filter-input:focus { outline: none; border-color: var(--accent); }
+
+/* keyword rank/filter toggle */
+.kw-mode {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+}
+.kw-mode-label { color: var(--ink-soft); font-size: 0.85rem; }
+.mode-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 5px 12px;
+  border: 1.5px solid var(--rule-2);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.mode-opt.is-on { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.mode-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--rule-2);
+}
+.mode-dot.is-on { background: var(--accent); border-color: var(--accent); }
+
+.filter-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border-top: 1px solid var(--rule);
+}
+
+/* flag tags inside a tracker row's title cell */
+.tr-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+
+/* ---- department discovery summary (this session) ---- */
+.dept-summary {
+  margin: 0.4rem 0 1rem 0;
+  padding: 0.7rem 0.9rem;
+  border: 1.5px solid var(--rule-2);
+  border-radius: 10px;
+  background: var(--paper-2);
+}
+.dept-summary-label {
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+  margin-bottom: 0.45rem;
+}
+.dept-chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.dept-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 4px 6px 4px 10px;
+  border: 1.5px solid var(--rule-2);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.dept-chip:hover { border-color: var(--accent); color: var(--accent); }
+/* Active chip = the department the view is currently narrowed to. */
+.dept-chip.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--paper);
+}
+.dept-chip.on:hover { color: var(--paper); }
+.dept-chip .dc-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px; height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+/* When the chip is active, invert the count badge so it reads on the accent fill. */
+.dept-chip.on .dc-count {
+  background: var(--paper);
+  color: var(--accent);
+}
+
+/* "Showing <dept> · clear" indicator above the narrowed list (this session). */
+.dept-view-note {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 0.8rem 0;
+  font-size: 0.85rem;
+  color: var(--ink-faint);
+}
+.dept-view-note .dvn-label b { color: var(--ink); }
+.dept-view-note .dvn-clear {
+  border: 1.5px solid var(--rule-2);
+  background: var(--paper);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 2px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.dept-view-note .dvn-clear:hover { border-color: var(--accent); }
+
+/* ---- delete-a-phase affordance in History (Post-Phase-O) ----
+   Built entirely on themed tokens (--danger / --rule / --paper-2 / --ink-faint)
+   so it re-skins with the phase colour theme AND light/dark, like everything
+   else. Sits at the foot of a phase's History detail, set off by a top rule. */
+.phase-delete {
+  margin-top: 1.6rem;
+  padding-top: 1.2rem;
+  border-top: 1.5px solid var(--rule-2);
+}
+.phase-delete-warn {
+  margin: 0 0 0.8rem 0;
+  padding: 0.75rem 0.9rem;
+  border: 1.5px solid var(--danger-border);
+  border-radius: 10px;
+  background: var(--danger-bg);
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  max-width: 60ch;
+}
+.phase-delete-warn b { color: var(--danger); }
+.phase-delete-warn.strong { border-width: 2px; }
+.phase-delete-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+/* ---- two-bar run progress (this session) ---- */
+.bar-block { margin: 14px 0; }
+.bar-caption {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px; color: var(--ink-faint);
+  margin-bottom: 6px;
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.bar-caption .co-stage { color: var(--accent); }
+.bar-fill.co {
+  background: var(--accent);
+  opacity: 0.75;
+}
+#coBarBlock #coBarName { color: var(--ink); }

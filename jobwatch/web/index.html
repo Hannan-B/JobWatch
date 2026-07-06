@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JobWatch</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <!-- The hover/focus affordance that reveals the banner on Home. A thin strip
+       at the very top; also keyboard-focusable so trackpad/keyboard users are
+       never trapped on a banner-less Home (G.1 fallback). -->
+  <div id="bannerEdge" tabindex="0" aria-label="Show navigation" hidden></div>
+
+  <!-- The one banner, present on every page. Shown by default everywhere except
+       Home, where it hover/focus-reveals. Contents are drawn by app.js so the
+       phase switcher can reflect live state. -->
+  <nav id="banner" class="banner" aria-label="Main" hidden></nav>
+
+  <div class="wrap">
+    <!-- Rendered by app.js. #reading = the phase-state spine (active/casual/
+         dormant). #view = the current route's content. -->
+    <div id="reading"></div>
+    <main id="view"></main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
