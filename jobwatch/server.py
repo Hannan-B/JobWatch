@@ -1023,45 +1023,64 @@ def _archive_phase_state(phase_id):
     }
 
 
-def _trends_state(company_key=None, phase_id=None, axis="department"):
-    """Phase F — shape the raw trend rows into chartable series, BANDED BY PHASE.
+def _collapse_duplicate_trend_rows(rows):
+    """Collapse trend rows describing the SAME cell on the SAME day.
 
-    Reads trends.entries_for(...) (the counts trends.py has recorded every run
-    since Phase B) and reshapes them for a hand-rolled SVG line chart. No new
-    fetching, no engine change — this only re-organises rows that already exist.
+    WHY (2026-07-24). trends.record_snapshot_trends APPENDS a fresh row set on
+    every run and never upserts, so checking one company twice in a day writes
+    two rows for the same (company, phase, department, location_bucket, date).
+    The aggregator below SUMS — correctly, for the case it was written for (one
+    series spanning several location buckets, or several companies at once) —
+    but it cannot tell a duplicate row from a legitimate second cell, so that
+    date's line doubles. Measured on real data before this fix: 1061 duplicated
+    cells across 5330 rows, inflating 6 of 19 dates, two of them tripled. The
+    damage is phantom hiring spikes on exactly the days a check was re-run.
 
-    axis = "department" (default; the useful one) or "location" — which field
-    becomes the set of lines on the chart. Counts are summed across the OTHER
-    field, and across companies when no single company is chosen, so each line
-    is the total open roles for that team (or place) on each date.
+    Fixed on the READ side deliberately (the engine is sacred): trends.py is
+    untouched, and rows ALREADY on disk are corrected as they're read, so no
+    data migration is needed.
 
-    The golden rule from Phase B holds here: comparison and continuity live
-    WITHIN a phase. So every series is split into per-phase BANDS — the chart
-    must never draw one continuous line across a six-month gap between phases.
-    Each band carries its phase's id/name/type/dates so the UI can label it and
-    leave a visible break between bands.
+    The two kinds of number collapse differently, because they mean different
+    things (DATA_FORMATS §6):
+      open_count                - ABSOLUTE ("this many are open right now"). The
+                                  LAST row written for the cell is the current
+                                  truth; earlier ones are stale. LAST WINS.
+      added_count/removed_count - DELTAS since the previous check. Each check
+                                  reports its own movement, so a day with two
+                                  checks (3 new in the morning, 1 more in the
+                                  afternoon) genuinely added 4. These SUM.
 
-    Returned shape:
-        {
-          "axis": "department",
-          "company_key": <key or None>,
-          "phase_id": <id or None>,
-          "phases": [ {id,name,type,started_on,ended_on,is_current}, ... ],
-          "series": [
-             { "label": "Finance",
-               "total_latest": 9,            # newest point across all its bands
-               "bands": [
-                 { "phase_id": "...", "phase_name": "...", "phase_type": "active",
-                   "points": [ {"date":"2026-04-02","value":2}, ... ] },
-                 ...
-               ] },
-             ...
-          ],
-          "empty": <bool>,         # true when there isn't enough to chart
-          "date_min": "YYYY-MM-DD" or None,
-          "date_max": "YYYY-MM-DD" or None
-        }
+    First-appearance order is preserved, so date ordering downstream is
+    unaffected. Rows with no date have no safe key and pass through untouched.
+    Never mutates the caller's row dicts (it copies).
     """
+    out = []
+    index = {}
+    for e in rows:
+        date = (e.get("date") or "")[:10]
+        if not date:
+            out.append(e)               # undated row: nothing safe to collapse on
+            continue
+        key = (e.get("company_key"), e.get("phase_id"), e.get("department"),
+               e.get("location_bucket"), date)
+        merged = index.get(key)
+        if merged is None:
+            merged = dict(e)            # copy: never mutate the store's rows
+            index[key] = merged
+            out.append(merged)
+            continue
+        merged["open_count"] = e.get("open_count") or 0
+        if "added_count" in e or "added_count" in merged:
+            merged["added_count"] = ((merged.get("added_count") or 0)
+                                     + (e.get("added_count") or 0))
+        if "removed_count" in e or "removed_count" in merged:
+            merged["removed_count"] = ((merged.get("removed_count") or 0)
+                                       + (e.get("removed_count") or 0))
+        if not merged.get("phase_type") and e.get("phase_type"):
+            merged["phase_type"] = e.get("phase_type")
+    return out
+
+
 def _trends_state(company_key=None, phase_id=None, axis="department",
                   company_keys=None, metric="open", locations=None):
     """Phase F — shape the raw trend rows into chartable series, BANDED BY PHASE.
@@ -1146,6 +1165,11 @@ def _trends_state(company_key=None, phase_id=None, axis="department",
         rows = trends_store.entries_for(company_key=None, phase_id=phase_id)
         if wanted is not None:
             rows = [e for e in rows if str(e.get("company_key")) in wanted]
+
+    # Collapse same-day duplicate rows BEFORE anything sums them. The writer
+    # appends and never upserts, so a company checked twice in a day has two
+    # rows per cell; without this the aggregation below doubles that date.
+    rows = _collapse_duplicate_trend_rows(rows)
 
     # Phase N — optional location filter on the coarse trend bucket (city-level).
     # We match the saved/passed locations against location_bucket directly: a
@@ -1406,6 +1430,55 @@ _TRACKER_FUNNEL_ORDER = ("applied", "screening", "interview", "offer")
 _TRACKER_TERMINAL = ("ghosted", "offer", "rejected", "withdrawn")
 
 
+def _employer_engaged(record) -> bool:
+    """Did the EMPLOYER actually engage with this application?
+
+    This is what "response rate" should mean, and the old formula got it wrong:
+    it counted EVERY rejection as a response (including auto-rejections that
+    never reached a human) and counted `withdrawn` too, which is the applicant's
+    own action, not a reply.
+
+    The rule now:
+      * rejected_before_interview -> NO. Explicit: it never got in front of
+        anyone. This overrides the markers below.
+      * screening / interview / offer / rejected_after_interview -> YES. The
+        status itself proves a conversation happened.
+      * everything else (applied, ghosted, withdrawn, and LEGACY bare
+        "rejected") -> judged by the engagement MARKERS: the screening-interview
+        flag or a non-zero interview-round count.
+
+    That last line is what makes `withdrawn` and `ghosted` honest without asking
+    the user to re-classify them: withdrawing after two interview rounds counts,
+    withdrawing because you took another job before anyone called doesn't; being
+    ghosted after a screening counts, being ghosted in silence doesn't. It also
+    handles legacy rows, which carry no stage, from the same markers.
+    """
+    st = (record.get("status") or "").strip()
+    if st == applications_store.STATUS_REJECTED_BEFORE_INTERVIEW:
+        return False
+    if st in (applications_store.STATUS_SCREENING,
+              applications_store.STATUS_INTERVIEW,
+              applications_store.STATUS_OFFER,
+              applications_store.STATUS_REJECTED_AFTER_INTERVIEW):
+        return True
+    return bool(record.get("screening_interview")) or \
+        int(record.get("interview_rounds") or 0) > 0
+
+
+def _reached_screening(record) -> bool:
+    """Cumulative-reached, not current-status: an application now at interview
+    also reached screening. A post-interview rejection reached it too."""
+    return _employer_engaged(record)
+
+
+def _reached_interview(record) -> bool:
+    st = (record.get("status") or "").strip()
+    return (st in (applications_store.STATUS_INTERVIEW,
+                   applications_store.STATUS_OFFER,
+                   applications_store.STATUS_REJECTED_AFTER_INTERVIEW)
+            or int(record.get("interview_rounds") or 0) > 0)
+
+
 def _tracker_trends_state(phase_id=None, bucket=None, sub_bucket=None,
                           today=None):
     """Phase N — the data behind the "My applications" sub-tab: a funnel of how
@@ -1465,9 +1538,7 @@ def _tracker_trends_state(phase_id=None, bucket=None, sub_bucket=None,
     total = len(rows)
 
     # ---- by-status tally + funnel ----
-    by_status = {s: 0 for s in
-                 ("applied", "screening", "interview", "ghosted", "offer",
-                  "rejected", "withdrawn")}
+    by_status = {s: 0 for s in applications_store.ALL_STATUSES}
     for r in rows:
         st = r.get("status", "applied")
         if st in by_status:
@@ -1478,15 +1549,8 @@ def _tracker_trends_state(phase_id=None, bucket=None, sub_bucket=None,
     # We infer "reached" from current status + the screening_interview flag, since
     # the ladder is one-way (you can't be at interview without having applied).
     reached_applied = total                       # everything was applied
-    reached_screening = sum(
-        1 for r in rows
-        if r.get("status") in ("screening", "interview", "offer")
-        or r.get("status") == "rejected" and r.get("screening_interview")
-        or r.get("screening_interview"))
-    reached_interview = sum(
-        1 for r in rows
-        if r.get("status") in ("interview", "offer")
-        or (r.get("interview_rounds") or 0) > 0)
+    reached_screening = sum(1 for r in rows if _reached_screening(r))
+    reached_interview = sum(1 for r in rows if _reached_interview(r))
     reached_offer = by_status["offer"]
 
     funnel = [
@@ -1504,19 +1568,16 @@ def _tracker_trends_state(phase_id=None, bucket=None, sub_bucket=None,
         "interview_rate": _rate(reached_interview),
         "offer_rate": _rate(reached_offer),
         "ghost_rate": _rate(by_status["ghosted"]),
-        # response = anything beyond a silent applied/ghosted: reached screening+
-        # or got any terminal that isn't ghost.
-        "response_rate": _rate(reached_screening
-                               + by_status["rejected"]
-                               + by_status["offer"]
-                               + by_status["withdrawn"]
-                               - sum(1 for r in rows
-                                     if r.get("status") in ("rejected", "offer", "withdrawn")
-                                     and (r.get("screening_interview")
-                                          or r.get("status") in ("interview", "offer")))),
+        # See _employer_engaged: a response means the employer actually engaged,
+        # not merely that the row reached a terminal state. Counted once per row,
+        # so it can't double-count and needs no clamp.
+        "response_rate": _rate(sum(1 for r in rows if _employer_engaged(r))),
+        # Rejection SPLIT (2026-07-25) — the point of staging rejections.
+        "rejected_before_interview_rate":
+            _rate(by_status.get(applications_store.STATUS_REJECTED_BEFORE_INTERVIEW, 0)),
+        "rejected_after_interview_rate":
+            _rate(by_status.get(applications_store.STATUS_REJECTED_AFTER_INTERVIEW, 0)),
     }
-    # response_rate can double-count; clamp to [0,1] defensively.
-    rates["response_rate"] = max(0.0, min(1.0, rates["response_rate"]))
 
     # ---- windowed APPLIED counts (raw counts, per the locked decision) ----
     def _within(days):

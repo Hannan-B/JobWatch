@@ -48,8 +48,12 @@ def _install(pages, launch_html=None):
         f'<html><script>var s="USESSION={_SES}";</script></html>'
 
     class _Resp:
-        def __init__(self, p): self._p = p
+        # NOTE: the connector reads r.geturl() on the launch response to gather
+        # USESSION candidates from the FINAL (post-redirect) url, so the fake
+        # response must expose it or the session open raises AttributeError.
+        def __init__(self, p, url=""): self._p = p; self._url = url
         def read(self): return self._p.encode("utf-8")
+        def geturl(self): return self._url
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
@@ -57,7 +61,7 @@ def _install(pages, launch_html=None):
         def open(self, req, timeout=None):
             url = req.full_url if hasattr(req, "full_url") else str(req)
             if "ETREC179GF.open" in url and "etrec106" not in url.lower() and "VACANCY_ID" not in url:
-                return _Resp(_launch_html)
+                return _Resp(_launch_html, url)
             if "etrec106gf.json" in url:
                 _requested.append(url)
                 try:
@@ -66,8 +70,8 @@ def _install(pages, launch_html=None):
                     _req_headers.append({})
                 idx = len(_requested) - 1
                 payload = _pages[idx] if idx < len(_pages) else {"search": {"total_rec": 0}, "results": []}
-                return _Resp(json.dumps(payload))
-            return _Resp("{}")
+                return _Resp(json.dumps(payload), url)
+            return _Resp("{}", url)
 
     connectors.urllib.request.build_opener = lambda *a, **k: _Op()
     connectors._polite_pause = lambda: None

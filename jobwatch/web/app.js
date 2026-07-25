@@ -861,21 +861,34 @@ let TRACKER = null;                 // last /api/applications payload
 let TRACK_FILTERS = { statuses: new Set(), companies: new Set(), screening: new Set() };
 let TRACK_SORT = { key: 'applied_on', dir: 'desc' };  // key: applied_on|company_name|title|status
 
-/* The 7 statuses, grouped, with their fixed semantic colours (L.2). These are
+/* The statuses, grouped, with their fixed semantic colours (L.2). These are
    meaning, not theme decoration, so they stay constant across all H themes —
    the colour classes live in app.css (.st-applied etc.). */
 const STATUS_GROUPS = [
   ['To-do',       [['applied', 'Applied']]],
   ['In progress', [['screening', 'Screening'], ['interview', 'Interview']]],
   ['Complete',    [['ghosted', 'Ghosted'], ['offer', 'Offer'],
-                   ['rejected', 'Rejected'], ['withdrawn', 'Withdrawn']]],
+                   ['rejected_before_interview', 'Rejected (before interview)'],
+                   ['rejected_after_interview', 'Rejected (after interview)'],
+                   ['withdrawn', 'Withdrawn']]],
 ];
 const STATUS_LABEL = {
   applied: 'Applied', screening: 'Screening', interview: 'Interview',
-  ghosted: 'Ghosted', offer: 'Offer', rejected: 'Rejected', withdrawn: 'Withdrawn',
+  ghosted: 'Ghosted', offer: 'Offer', withdrawn: 'Withdrawn',
+  rejected_before_interview: 'Rejected (before interview)',
+  rejected_after_interview: 'Rejected (after interview)',
+  /* LEGACY: rows written before rejections were staged. Still rendered so old
+     applications display and can be corrected; never OFFERED as a new choice
+     (it's absent from TERMINAL_STATUSES below, which drives the picker). */
+  rejected: 'Rejected (stage not recorded)',
 };
 const LIVE_LADDER = ['applied', 'screening', 'interview'];
-const TERMINAL_STATUSES = ['ghosted', 'offer', 'rejected', 'withdrawn'];
+/* Selectable terminals — legacy 'rejected' is deliberately excluded so the
+   picker only offers staged rejections from now on. A row sitting on the legacy
+   value can still be corrected TO one of these (legalNextStatuses treats any
+   unknown-to-the-ladder status as terminal). */
+const TERMINAL_STATUSES = ['ghosted', 'offer', 'rejected_before_interview',
+                           'rejected_after_interview', 'withdrawn'];
 
 /* The legal moves FROM a given status, mirroring applications.py's rule, so the
    picker only shows what the server will accept. Forward ladder steps + all
@@ -954,7 +967,11 @@ function drawTracker(scrollTop = false) {
    Status & Company: multi-select (tick several; empty set = all). Screening:
    tick Yes and/or No (empty or both = all). Sort: any column, asc/desc. */
 
-const STATUS_ORDER = ['applied', 'screening', 'interview', 'ghosted', 'offer', 'rejected', 'withdrawn'];
+/* Sort order for the tracker's status column. Includes the legacy 'rejected'
+   so old rows sort sensibly rather than falling off the end. */
+const STATUS_ORDER = ['applied', 'screening', 'interview', 'ghosted', 'offer',
+                      'rejected_before_interview', 'rejected_after_interview',
+                      'rejected', 'withdrawn'];
 
 function applyTrackerFilters(apps) {
   const f = TRACK_FILTERS;
@@ -3437,6 +3454,10 @@ let TREND_BREAKDOWN = false;    // false = one combined line; true = per-company
 let TREND_HILITE = null;        // series label currently hovered (dims the rest)
 let TREND_PICKER = null;       // the bucket→sub-bucket→company tree (/api/trends/companies)
 let TREND_COMPANIES = null;    // Set of company keys committed to the chart (null = all)
+let TREND_GRAIN = 'week';      // 'day' | 'week' — EXPLICIT now. Was inferred from
+                               // the number of check dates (>12 => weekly), which
+                               // silently changed the chart under the user.
+let TREND_RANGE = null;        // {from,to} date window; null = phase start → today
 let TREND_DRAFT = null;        // Set being edited inside the open dropdown (before Apply)
 let TREND_DD_OPEN = false;      // is the company dropdown open
 let TREND_DD_SEARCH = '';       // live search text inside the dropdown
@@ -3589,8 +3610,10 @@ function drawCompanyTrends() {
 
   // --- The chart ---
   const chartWrap = el('div', { class: 'trend-chart-wrap' });
-  chartWrap.appendChild(buildTrendChart(toDraw, toDraw));
   children.push(chartWrap);
+  // Drawn AFTER mount: the chart sizes itself to the container's real width, so
+  // it fills the panel instead of floating at a data-derived width.
+  queueMicrotask(() => mountTrendChart(chartWrap, toDraw));
 
   // --- Legend (only in breakdown; doubles as hover-to-isolate) ---
   if (TREND_BREAKDOWN && toDraw.length > 1) {
@@ -3598,6 +3621,7 @@ function drawCompanyTrends() {
   }
 
   // --- Under-chart controls: split (single company only) + breakdown toggle ---
+  children.push(buildTrendRangeControls());
   children.push(buildUnderChartControls(single, breakdownSeries.length));
 
   // --- Plain-language readout of the lead line ---
@@ -4288,7 +4312,74 @@ function smoothPath(pts) {
    `shown` and `allSeries` are the same list here; colour is by position. A
    series with is_total draws as the emphasised/total line (ink-soft, gradient
    fill); the rest are the breakdown palette. TREND_HILITE dims non-matching. */
-function buildTrendChart(shown, allSeries) {
+/* ---------------------------------------------------------------------------
+   The company-hiring chart  (rewritten 2026-07-25)
+   ---------------------------------------------------------------------------
+   WHAT WAS WRONG BEFORE, and what each fix here is for:
+
+   1. THE CHART DIDN'T FILL ITS BOX. The SVG sized itself to its DATA
+      (`width = padL + (nCols-1)*colW + padR`) and was pinned left with
+      preserveAspectRatio="xMinYMin meet". Five check-dates produced a ~560px
+      chart floating in a 2000px+ panel. Now the caller measures the container
+      and passes a target width in, and the chart lays out across it. A
+      ResizeObserver redraws on resize, so it stays filled.
+
+   2. THE EXTRA DOTS PER WEEK. The old weekly mode drew one COLUMN per week but
+      still plotted a dot for every individual check — all at their week's x.
+      Several checks in one week therefore stacked VERTICALLY on a single x
+      position, reading as if the same week held several conflicting values.
+      The x axis is now TIME-proportional, so a dot always sits at its own real
+      date and a stack is impossible.
+
+   3. WEEKLY WAS A GUESS, NOT A CHOICE. `const WEEKLY = allDates.size > 12` —
+      the chart silently switched to weeks at the 13th check date, and then
+      capped at the most recent 12 weeks, quietly hiding history. Both are gone.
+      Granularity is now an explicit Day/Week control, and nothing is hidden
+      except by the date range the user chooses.
+
+   THE TWO MODES (as specified by the owner):
+     • DAY  — one dot per check date, at that date's real position, joined by a
+              line. The value is the latest check that day (the server already
+              collapses same-day duplicates per cell, so a date carries one
+              value per series).
+     • WEEK — the SAME per-day dots, still at their real dates, PLUS a weekly
+              trend line drawn through one anchor per week: the LAST check in
+              that week. So the dots show every reading and the line shows the
+              weekly shape, instead of the two disagreeing.
+
+   PHASE BANDS: drawn from each phase's real date extent. Phases are sequential
+   by design (only one is current at a time), so they tile the time axis without
+   overlapping.
+--------------------------------------------------------------------------- */
+
+const TREND_DAY_MS = 86400000;
+function dayNum(d) { return Math.floor(Date.parse(String(d).slice(0, 10) + 'T00:00:00Z') / TREND_DAY_MS); }
+function dayStr(n) { return new Date(n * TREND_DAY_MS).toISOString().slice(0, 10); }
+function todayStr() { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
+
+/* The selectable date window: from when the phase was set up, to today. Falls
+   back to the data's own extent when the phase has no start recorded. */
+function trendRangeBounds() {
+  let lo = (HOME && HOME.phase && HOME.phase.started_on) || null;
+  const dataLo = TRENDS && TRENDS.date_min ? TRENDS.date_min : null;
+  if (!lo) lo = dataLo;
+  if (lo && dataLo && dataLo < lo) lo = dataLo;   // never hide real data
+  const hi = todayStr();
+  return { lo: lo || hi, hi };
+}
+
+/* The window actually in force: the user's choice, clamped to the bounds. */
+function effectiveTrendRange() {
+  const b = trendRangeBounds();
+  let from = (TREND_RANGE && TREND_RANGE.from) || b.lo;
+  let to = (TREND_RANGE && TREND_RANGE.to) || b.hi;
+  if (from < b.lo) from = b.lo;
+  if (to > b.hi) to = b.hi;
+  if (from > to) from = b.lo;
+  return { from, to };
+}
+
+function buildTrendChart(shown, allSeries, targetW) {
   const SVGNS = 'http://www.w3.org/2000/svg';
   const mk = (tag, attrs, text) => {
     const n = document.createElementNS(SVGNS, tag);
@@ -4297,111 +4388,63 @@ function buildTrendChart(shown, allSeries) {
     return n;
   };
 
-  // Colour: the total line is neutral/emphasised; breakdown lines take the
-  // palette by their order among the non-total series.
-  const hasTotal = shown.length && shown[0].is_total;
+  const WEEKLY = (TREND_GRAIN === 'week');
+  const range = effectiveTrendRange();
+
+  // Colour: the total line is emphasised; breakdown lines take the palette.
   const colorOf = {};
   let ci = 0;
+  for (const s of shown) colorOf[s.label] = s.is_total ? 'var(--ink)' : trendColor(ci++);
+
+  // ---- Gather every point inside the chosen window --------------------------
+  // Structure kept per (series, band) so phase bands and colours still work.
+  const inRange = (d) => d >= range.from && d <= range.to;
+  const seriesPts = [];        // {s, bandIdx, bandCount, phaseId, pts:[{date,value}]}
+  const phaseExtent = new Map(); // phaseId -> {name,type,lo,hi}
   for (const s of shown) {
-    if (s.is_total) colorOf[s.label] = 'var(--ink)';
-    else colorOf[s.label] = trendColor(ci++);
-  }
-
-  // ---- Collect the ordered (phase → dates) union across shown series ----
-  const phaseDates = new Map(); // phaseId -> {name,type,dates:Set,typeAt:Map}
-  const phaseSeq = [];
-  for (const s of shown) {
-    for (const b of s.bands) {
-      if (!phaseDates.has(b.phase_id)) {
-        phaseDates.set(b.phase_id, { name: b.phase_name, type: b.phase_type, dates: new Set(), typeAt: new Map() });
-        phaseSeq.push(b.phase_id);
-      }
-      const rec = phaseDates.get(b.phase_id);
-      b.points.forEach(p => {
-        rec.dates.add(p.date);
-        if (p.phase_type && !rec.typeAt.has(p.date)) rec.typeAt.set(p.date, p.phase_type);
-      });
-    }
-  }
-
-  // Total distinct real dates → decide whether to aggregate to weeks.
-  const allDates = new Set();
-  phaseDates.forEach(rec => rec.dates.forEach(d => allDates.add(d)));
-  const WEEKLY = allDates.size > 12;
-
-  // ---- Build columns. Each column is a real check date (per-date mode) OR a
-  // week bucket (weekly mode). In weekly mode we cap at the most recent 12 weeks.
-  const columns = [];   // {phaseId,date,type,weekKey?}
-  const phaseBands = []; // {phaseId,name,type,startIdx,endIdx}
-  for (const pid of phaseSeq) {
-    const rec = phaseDates.get(pid);
-    let dates = [...rec.dates].sort();
-    const startIdx = columns.length;
-    dates.forEach(d => columns.push({
-      phaseId: pid, date: d,
-      type: rec.typeAt.get(d) || rec.type || '',
-      weekKey: mondayOf(d),
-    }));
-    phaseBands.push({ phaseId: pid, name: rec.name, type: rec.type, startIdx, endIdx: columns.length - 1 });
-  }
-
-  // In weekly mode, collapse columns to unique (phase, week) slots and keep only
-  // the most recent 12 weeks; per-date dots still map onto their week's slot.
-  let colIndex = new Map();     // "phaseId|date" -> column x-index (per-date)
-  let weekIndex = new Map();    // "phaseId|weekKey" -> column x-index (weekly)
-  let axisColumns = columns;    // what actually lays out on x
-  if (WEEKLY) {
-    // Unique week slots in order, then trim to last 12.
-    const seen = new Set();
-    let weekCols = [];
-    for (const c of columns) {
-      const wk = c.phaseId + '|' + c.weekKey;
-      if (!seen.has(wk)) { seen.add(wk); weekCols.push({ phaseId: c.phaseId, date: c.weekKey, type: c.type, weekKey: c.weekKey }); }
-    }
-    if (weekCols.length > 12) weekCols = weekCols.slice(weekCols.length - 12);
-    // Rebuild phase bands over the trimmed week columns.
-    phaseBands.length = 0;
-    const byPhase = new Map();
-    weekCols.forEach((c, i) => {
-      weekIndex.set(c.phaseId + '|' + c.weekKey, i);
-      if (!byPhase.has(c.phaseId)) byPhase.set(c.phaseId, { start: i, end: i, name: (phaseDates.get(c.phaseId) || {}).name, type: (phaseDates.get(c.phaseId) || {}).type });
-      byPhase.get(c.phaseId).end = i;
+    s.bands.forEach((b, bandIdx) => {
+      const pts = (b.points || []).filter(p => inRange(p.date))
+        .sort((p, q) => p.date < q.date ? -1 : p.date > q.date ? 1 : 0);
+      if (!pts.length) return;
+      seriesPts.push({ s, bandIdx, bandCount: s.bands.length, phaseId: b.phase_id, pts });
+      const rec = phaseExtent.get(b.phase_id)
+        || { name: b.phase_name, type: b.phase_type, lo: pts[0].date, hi: pts[0].date };
+      if (pts[0].date < rec.lo) rec.lo = pts[0].date;
+      if (pts[pts.length - 1].date > rec.hi) rec.hi = pts[pts.length - 1].date;
+      phaseExtent.set(b.phase_id, rec);
     });
-    for (const [pid, r] of byPhase) phaseBands.push({ phaseId: pid, name: r.name, type: r.type, startIdx: r.start, endIdx: r.end });
-    axisColumns = weekCols;
-  } else {
-    columns.forEach((c, i) => colIndex.set(c.phaseId + '|' + c.date, i));
-    axisColumns = columns;
   }
 
-  // ---- Geometry ----
-  const padL = 42, padR = 20, padT = 18, padB = 56;
-  const nCols = axisColumns.length;
-  const innerColW = Math.max(46, Math.min(120, 620 / Math.max(1, nCols)));
-  const plotW = Math.max(1, nCols - 1) * innerColW + 24;
-  const W = padL + plotW + padR;
+  const W = Math.max(360, Math.round(targetW || 900));
   const H = 300;
+  const padL = 46, padR = 22, padT = 18, padB = 56;
+  const plotW = Math.max(1, W - padL - padR);
   const plotH = H - padT - padB;
-
-  // y scale from the max value across shown series (for the metric in play).
-  let maxV = 0;
-  for (const s of shown) for (const b of s.bands) for (const p of b.points) maxV = Math.max(maxV, p.value);
-  const niceMax = niceCeil(Math.max(1, maxV));
-  const x = (i) => padL + (nCols === 1 ? plotW / 2 : (i * innerColW) + 12);
-  const y = (v) => padT + plotH - (v / niceMax) * plotH;
-
-  // Map a point (phaseId,date) to its x-column index, weekly-aware.
-  const idxFor = (phaseId, date) => WEEKLY
-    ? weekIndex.get(phaseId + '|' + mondayOf(date))
-    : colIndex.get(phaseId + '|' + date);
 
   const svg = document.createElementNS(SVGNS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.setAttribute('class', 'trend-svg');
-  svg.setAttribute('width', W);
+  svg.setAttribute('width', '100%');
   svg.setAttribute('height', H);
-  svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+  svg.setAttribute('preserveAspectRatio', 'none');
   svg.setAttribute('role', 'img');
+
+  if (!seriesPts.length) {
+    svg.appendChild(mk('text', { x: W / 2, y: H / 2, class: 'trend-xlabel', 'text-anchor': 'middle' },
+      'No checks in this date range'));
+    return svg;
+  }
+
+  // ---- Scales ---------------------------------------------------------------
+  // x is TIME-proportional, so every dot sits at its own real date (fix #2).
+  const d0 = dayNum(range.from), d1 = dayNum(range.to);
+  const span = Math.max(1, d1 - d0);
+  const x = (dateStr) => padL + ((dayNum(dateStr) - d0) / span) * plotW;
+
+  let maxV = 0;
+  for (const sp of seriesPts) for (const p of sp.pts) maxV = Math.max(maxV, p.value);
+  const niceMax = niceCeil(Math.max(1, maxV));
+  const y = (v) => padT + plotH - (v / niceMax) * plotH;
 
   // ---- gradient def (soft fill under the lead line) ----
   const defs = mk('defs', {});
@@ -4411,196 +4454,158 @@ function buildTrendChart(shown, allSeries) {
   defs.appendChild(grad);
   svg.appendChild(defs);
 
-  // ---- horizontal gridlines + y labels ----
-  const ticks = [...new Set([0, Math.round(niceMax / 2), niceMax])];
-  ticks.forEach(t => {
+  // ---- gridlines + y labels ----
+  [...new Set([0, Math.round(niceMax / 2), niceMax])].forEach(t => {
     svg.appendChild(mk('line', { x1: padL, y1: y(t), x2: W - padR, y2: y(t), class: 'trend-grid' }));
     svg.appendChild(mk('text', { x: padL - 8, y: y(t) + 4, class: 'trend-axis-label', 'text-anchor': 'end' }, String(t)));
   });
+  svg.appendChild(mk('line', { x1: padL, y1: y(0), x2: W - padR, y2: y(0), class: 'trend-axis-rule' }));
 
-  // ---- vertical guide line on EVERY column (the reference look) ----
-  axisColumns.forEach((c, i) => {
-    svg.appendChild(mk('line', { x1: x(i), y1: padT, x2: x(i), y2: padT + plotH, class: 'trend-vguide' }));
-  });
-
-  // ---- baseline rule: separates the plot from the date row beneath it ----
-  svg.appendChild(mk('line', { x1: padL, y1: padT + plotH, x2: W - padR, y2: padT + plotH, class: 'trend-axis-rule' }));
-
-  // ---- phase band backgrounds + labels + dividers (when >1 phase) ----
-  if (phaseBands.length > 1) {
-    phaseBands.forEach((pb, bi) => {
-      const x0 = x(pb.startIdx) - innerColW * 0.4;
-      const x1 = x(pb.endIdx) + innerColW * 0.4;
-      if (bi % 2 === 1) svg.appendChild(mk('rect', { x: x0, y: padT, width: Math.max(0, x1 - x0), height: plotH, class: 'trend-band-bg' }));
-      if (bi > 0) {
-        const dx = (x(pb.startIdx) + x(phaseBands[bi - 1].endIdx)) / 2;
-        svg.appendChild(mk('line', { x1: dx, y1: padT, x2: dx, y2: padT + plotH, class: 'trend-band-divider' }));
-      }
-      svg.appendChild(mk('text', { x: (x0 + x1) / 2, y: H - padB + 30, class: 'trend-band-label', 'text-anchor': 'middle' }, pb.name));
+  // ---- phase bands (from real date extents; phases are sequential) ----------
+  const phases = [...phaseExtent.entries()];
+  if (phases.length > 1) {
+    phases.forEach(([pid, rec], i) => {
+      if (i === 0) return;
+      const xs = x(rec.lo) - 6;
+      svg.appendChild(mk('line', { x1: xs, y1: padT, x2: xs, y2: y(0), class: 'trend-phase-divider' }));
+    });
+    phases.forEach(([pid, rec]) => {
+      svg.appendChild(mk('text', { x: (x(rec.lo) + x(rec.hi)) / 2, y: H - padB + 30,
+        class: 'trend-band-label', 'text-anchor': 'middle' }, rec.name || ''));
     });
   }
 
-  // ---- x date labels (compact); thinned if crowded — BELOW the baseline ----
-  const everyN = nCols > 10 ? Math.ceil(nCols / 10) : 1;
-  axisColumns.forEach((c, i) => {
-    if (i % everyN !== 0 && i !== nCols - 1) return;
-    const label = WEEKLY ? ('wk ' + c.date.slice(5)) : c.date.slice(5);
-    svg.appendChild(mk('text', { x: x(i), y: padT + plotH + 18, class: 'trend-xlabel', 'text-anchor': 'middle' }, label));
-  });
+  // ---- x labels: evenly spaced across the window, never crowded -------------
+  const tickCount = Math.max(2, Math.min(8, Math.floor(plotW / 110)));
+  for (let i = 0; i <= tickCount; i++) {
+    const dn = d0 + Math.round((span * i) / tickCount);
+    const ds = dayStr(dn);
+    svg.appendChild(mk('text', { x: x(ds), y: padT + plotH + 18, class: 'trend-xlabel', 'text-anchor': 'middle' },
+      ds.slice(5)));
+  }
 
-  // ---- the lines ----
-  // Draw order: dimmed lines first, then highlighted, so the focused one sits on
-  // top. The total line (is_total) always gets the gradient fill.
-  const drawList = shown.slice();
-  // Stable ordering: total first (fill sits at the back), breakdown after.
-  drawList.sort((a, b) => (a.is_total === b.is_total) ? 0 : (a.is_total ? -1 : 1));
+  // ---- the lines ------------------------------------------------------------
+  const drawList = seriesPts.slice()
+    .sort((a, b) => (a.s.is_total === b.s.is_total) ? 0 : (a.s.is_total ? -1 : 1));
 
-  for (const s of drawList) {
-    const base = colorOf[s.label];
+  for (const sp of drawList) {
+    const s = sp.s;
     const dim = TREND_HILITE && TREND_HILITE !== s.label;
-    const bandCount = s.bands.length;
+    const strokeCol = s.is_total ? 'var(--accent)' : bandShade(colorOf[s.label], sp.bandIdx, sp.bandCount);
 
-    s.bands.forEach((b, bandIdx) => {
-      // Aggregate points into the axis columns (weekly mode sums per week — but
-      // we keep the raw per-check points for the dots).
-      const rawPts = b.points
-        .map(p => { const idx = idxFor(b.phase_id, p.date); return idx == null ? null : { idx, x: x(idx), y: y(p.value), p }; })
-        .filter(Boolean);
-      if (!rawPts.length) return;
+    // Dots: ALWAYS one per real check date, at its own x. Same in both modes —
+    // week mode adds a trend line over them, it doesn't move or merge them.
+    const dots = sp.pts.map(p => ({ x: x(p.date), y: y(p.value), p }));
 
-      // For the LINE in weekly mode, use one value per week column (latest check
-      // in that week) so the smoothed trend reads cleanly; dots still show all.
-      let linePts;
-      if (WEEKLY) {
-        const perCol = new Map();
-        b.points.forEach(p => {
-          const idx = idxFor(b.phase_id, p.date);
-          if (idx == null) return;
-          const cur = perCol.get(idx);
-          if (!cur || p.date >= cur.date) perCol.set(idx, { date: p.date, value: p.value });
-        });
-        linePts = [...perCol.entries()].sort((a, c) => a[0] - c[0]).map(([idx, v]) => [x(idx), y(v.value)]);
-      } else {
-        linePts = rawPts.map(pt => [pt.x, pt.y]);
-      }
-
-      const strokeCol = s.is_total ? 'var(--accent)' : bandShade(base, bandIdx, bandCount);
-
-      // Gradient area fill under the TOTAL line only (keeps breakdown uncluttered).
-      if (s.is_total && linePts.length > 1) {
-        const area = smoothPath(linePts) + ` L${linePts[linePts.length - 1][0]},${padT + plotH} L${linePts[0][0]},${padT + plotH} Z`;
-        svg.appendChild(mk('path', { d: area, fill: 'url(#trendFill)', stroke: 'none', class: 'trend-area' + (dim ? ' dim' : '') }));
-      }
-
-      // The line itself (smoothed).
-      if (linePts.length > 1) {
-        svg.appendChild(mk('path', {
-          d: smoothPath(linePts), fill: 'none', stroke: strokeCol,
-          'stroke-width': s.is_total ? '2.6' : '2',
-          'stroke-linejoin': 'round', 'stroke-linecap': 'round',
-          class: 'trend-line' + (dim ? ' dim' : ''),
-        }));
-      }
-
-      // Dots — one per REAL check (all of them, even in weekly mode).
-      rawPts.forEach((pt, k) => {
-        const isLast = k === rawPts.length - 1;
-        const dot = mk('circle', { cx: pt.x, cy: pt.y, r: rawPts.length === 1 ? 4 : (s.is_total ? 3.4 : 3),
-          fill: strokeCol, class: 'trend-dot' + (dim ? ' dim' : '') });
-        dot.appendChild(mk('title', {}, `${s.label} · ${pt.p.date}: ${pt.p.value}`));
-        svg.appendChild(dot);
-        // value label on the last point of the total line only (avoids clutter).
-        if (isLast && s.is_total && !dim) {
-          svg.appendChild(mk('text', { x: pt.x + 6, y: pt.y - 7, class: 'trend-point-val', fill: strokeCol }, String(pt.p.value)));
-        }
+    // The LINE. Day mode joins every dot. Week mode joins one anchor per ISO
+    // week — the LAST check in that week, which is the week's current truth and
+    // guarantees the line ends on the most recent reading.
+    let linePts;
+    if (WEEKLY) {
+      const perWeek = new Map();
+      sp.pts.forEach(p => {
+        const wk = mondayOf(p.date);
+        const cur = perWeek.get(wk);
+        if (!cur || p.date >= cur.date) perWeek.set(wk, p);
       });
+      linePts = [...perWeek.values()]
+        .sort((a, b) => a.date < b.date ? -1 : 1)
+        .map(p => [x(p.date), y(p.value)]);
+    } else {
+      linePts = dots.map(d => [d.x, d.y]);
+    }
+
+    if (s.is_total && linePts.length > 1) {
+      const area = smoothPath(linePts)
+        + ` L${linePts[linePts.length - 1][0]},${padT + plotH} L${linePts[0][0]},${padT + plotH} Z`;
+      svg.appendChild(mk('path', { d: area, fill: 'url(#trendFill)', stroke: 'none',
+        class: 'trend-area' + (dim ? ' dim' : '') }));
+    }
+    if (linePts.length > 1) {
+      svg.appendChild(mk('path', {
+        d: smoothPath(linePts), fill: 'none', stroke: strokeCol,
+        'stroke-width': s.is_total ? '2.6' : '2',
+        'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+        class: 'trend-line' + (dim ? ' dim' : ''),
+      }));
+    }
+
+    dots.forEach((d, k) => {
+      const isLast = k === dots.length - 1;
+      const dot = mk('circle', { cx: d.x, cy: d.y, r: dots.length === 1 ? 4 : (s.is_total ? 3.4 : 3),
+        fill: strokeCol, class: 'trend-dot' + (dim ? ' dim' : '') });
+      dot.appendChild(mk('title', {}, `${s.label} · ${d.p.date}: ${d.p.value}`));
+      svg.appendChild(dot);
+      if (isLast && s.is_total && !dim) {
+        svg.appendChild(mk('text', { x: d.x + 6, y: d.y - 7, class: 'trend-point-val', fill: strokeCol },
+          String(d.p.value)));
+      }
     });
   }
-
-  // ---- Coverage GAP bands + in-phase active/casual SWITCH markers ----
-  // (Per-date mode only; weekly mode's regular columns make gaps moot.)
-  if (!WEEKLY) {
-    const GAP_THRESHOLD = { active: 7, casual: 21 };
-    const dormancyDays = (typeof HOME !== 'undefined' && HOME && Number(HOME.dormancy_days)) || 21;
-    const daysBetween = (a, b) => {
-      const d1 = Date.parse(a + 'T00:00:00'), d2 = Date.parse(b + 'T00:00:00');
-      if (isNaN(d1) || isNaN(d2)) return 0;
-      return Math.round((d2 - d1) / 86400000);
-    };
-    for (let i = 1; i < columns.length; i++) {
-      const prev = columns[i - 1], cur = columns[i];
-      if (prev.phaseId !== cur.phaseId) continue;
-      const gapDays = daysBetween(prev.date, cur.date);
-      const stretchType = prev.type || 'active';
-      const threshold = GAP_THRESHOLD[stretchType] || GAP_THRESHOLD.active;
-      if (gapDays > threshold && gapDays < dormancyDays) {
-        const gx0 = x(i - 1) + innerColW * 0.18;
-        const gx1 = x(i) - innerColW * 0.18;
-        const rect = mk('rect', { x: gx0, y: padT, width: Math.max(2, gx1 - gx0), height: plotH, class: 'trend-gap-band' });
-        rect.appendChild(mk('title', {}, `${gapDays} days without a check — the line across this stretch may not reflect what happened in between.`));
-        svg.appendChild(rect);
-        svg.appendChild(mk('text', { x: (gx0 + gx1) / 2, y: padT + 12, class: 'trend-gap-label', 'text-anchor': 'middle' }, `${gapDays}d gap`));
-      }
-      if (prev.type && cur.type && prev.type !== cur.type) {
-        const sx = (x(i - 1) + x(i)) / 2;
-        svg.appendChild(mk('line', { x1: sx, y1: padT, x2: sx, y2: padT + plotH, class: 'trend-switch-divider' }));
-        svg.appendChild(mk('text', { x: sx, y: padT + plotH - 4, class: 'trend-switch-label', 'text-anchor': 'middle' }, cur.type === 'active' ? '→ active' : '→ casual'));
-      }
-    }
-  }
-
-  // ---- Hover crosshair + floating value tooltip ----
-  // A transparent overlay tracks the nearest column and shows a value bubble.
-  const hoverLine = mk('line', { x1: 0, y1: padT, x2: 0, y2: padT + plotH, class: 'trend-hover-line', style: 'opacity:0' });
-  svg.appendChild(hoverLine);
-  const tipG = mk('g', { class: 'trend-tip', style: 'opacity:0' });
-  const tipRect = mk('rect', { x: 0, y: 0, rx: 5, width: 10, height: 10, class: 'trend-tip-bg' });
-  const tipDate = mk('text', { x: 0, y: 0, class: 'trend-tip-date' }, '');
-  const tipVal = mk('text', { x: 0, y: 0, class: 'trend-tip-val' }, '');
-  tipG.appendChild(tipRect); tipG.appendChild(tipDate); tipG.appendChild(tipVal);
-  svg.appendChild(tipG);
-
-  const overlay = mk('rect', { x: padL, y: padT, width: Math.max(1, W - padL - padR), height: plotH, fill: 'transparent', style: 'cursor:crosshair' });
-  const leadSeries = shown.find(s => s.is_total) || shown[0];
-  overlay.addEventListener('mousemove', (ev) => {
-    const rect = svg.getBoundingClientRect();
-    const scaleX = W / rect.width;
-    const mx = (ev.clientX - rect.left) * scaleX;
-    // nearest column
-    let best = 0, bestD = Infinity;
-    for (let i = 0; i < nCols; i++) { const d = Math.abs(x(i) - mx); if (d < bestD) { bestD = d; best = i; } }
-    const col = axisColumns[best];
-    hoverLine.setAttribute('x1', x(best)); hoverLine.setAttribute('x2', x(best));
-    hoverLine.style.opacity = '1';
-    // value of the lead series at this column
-    let val = null, dateLabel = WEEKLY ? ('Week of ' + col.date) : col.date;
-    if (leadSeries) {
-      for (const b of leadSeries.bands) {
-        for (const p of b.points) {
-          const idx = idxFor(b.phase_id, p.date);
-          if (idx === best) { val = (val || 0) + p.value; if (!WEEKLY) dateLabel = p.date; }
-        }
-      }
-    }
-    if (val == null) { tipG.style.opacity = '0'; return; }
-    tipDate.textContent = dateLabel;
-    tipVal.textContent = String(val);
-    // size + place the bubble
-    const dw = dateLabel.length * 5.6 + 16;
-    const vw = String(val).length * 8 + 16;
-    const bw = Math.max(dw, vw, 54);
-    const bh = 34;
-    let bx = x(best) + 10; if (bx + bw > W - padR) bx = x(best) - bw - 10;
-    const by = padT + 6;
-    tipRect.setAttribute('x', bx); tipRect.setAttribute('y', by); tipRect.setAttribute('width', bw); tipRect.setAttribute('height', bh);
-    tipDate.setAttribute('x', bx + 8); tipDate.setAttribute('y', by + 13);
-    tipVal.setAttribute('x', bx + 8); tipVal.setAttribute('y', by + 28);
-    tipG.style.opacity = '1';
-  });
-  overlay.addEventListener('mouseleave', () => { hoverLine.style.opacity = '0'; tipG.style.opacity = '0'; });
-  svg.appendChild(overlay);
 
   return svg;
+}
+
+/* Draw the chart into `wrap` at the container's real width, and keep it filled
+   as the window resizes. Called after the wrap is in the DOM, because an
+   unmounted element has clientWidth 0. */
+function mountTrendChart(wrap, toDraw) {
+  const draw = () => {
+    const w = Math.max(360, Math.floor(wrap.clientWidth || 900));
+    wrap.replaceChildren(buildTrendChart(toDraw, toDraw, w));
+  };
+  draw();
+  if (window.ResizeObserver) {
+    if (wrap._trendRO) wrap._trendRO.disconnect();
+    let last = wrap.clientWidth;
+    wrap._trendRO = new ResizeObserver(() => {
+      const w = wrap.clientWidth;
+      if (Math.abs(w - last) < 8) return;   // ignore sub-pixel churn
+      last = w;
+      draw();
+    });
+    wrap._trendRO.observe(wrap);
+  }
+}
+
+/* Granularity (Day/Week) + the date window. The window is bounded by the phase
+   start and today, per the owner's spec. */
+function buildTrendRangeControls() {
+  const b = trendRangeBounds();
+  const r = effectiveTrendRange();
+
+  const grain = el('div', { class: 'toggle' },
+    [['day', 'Day'], ['week', 'Week']].map(([v, label]) =>
+      el('button', {
+        class: TREND_GRAIN === v ? 'on' : '',
+        type: 'button', 'aria-pressed': String(TREND_GRAIN === v),
+        onclick: () => { if (TREND_GRAIN !== v) { TREND_GRAIN = v; drawCompanyTrends(); } },
+      }, label)));
+
+  const mkDate = (which, val) => el('input', {
+    type: 'date', class: 'trend-date', value: val, min: b.lo, max: b.hi,
+    'aria-label': which === 'from' ? 'From date' : 'To date',
+    onchange: (e) => {
+      const v = e.target.value || null;
+      TREND_RANGE = Object.assign({ from: r.from, to: r.to }, TREND_RANGE || {});
+      TREND_RANGE[which] = v;
+     
+      drawCompanyTrends();
+    },
+  });
+
+  const reset = el('button', {
+    class: 'trend-reset', type: 'button',
+    onclick: () => { TREND_RANGE = null; drawCompanyTrends(); },
+  }, 'Reset');
+
+  const kids = [
+    el('div', { class: 'trend-ctl' }, [el('span', { class: 'trend-ctl-label' }, 'By'), grain]),
+    el('div', { class: 'trend-ctl' }, [el('span', { class: 'trend-ctl-label' }, 'From'), mkDate('from', r.from)]),
+    el('div', { class: 'trend-ctl' }, [el('span', { class: 'trend-ctl-label' }, 'To'), mkDate('to', r.to)]),
+  ];
+  if (TREND_RANGE) kids.push(reset);
+  return el('div', { class: 'trend-range-bar' }, kids);
 }
 
 /* A plain-language reading of one series across its phases, phrased for the

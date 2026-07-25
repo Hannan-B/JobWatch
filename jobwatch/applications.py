@@ -74,13 +74,43 @@ STATUS_SCREENING = "screening"
 STATUS_INTERVIEW = "interview"
 STATUS_GHOSTED = "ghosted"
 STATUS_OFFER = "offer"
-STATUS_REJECTED = "rejected"
 STATUS_WITHDRAWN = "withdrawn"
+
+# Rejections carry their STAGE (added 2026-07-25). Knowing whether a rejection
+# came before anyone spoke to you, or after you'd interviewed, is the difference
+# between "the market isn't biting" and "I'm getting in the room but not closing"
+# — and it's what makes a response rate meaningful (see server._employer_engaged).
+STATUS_REJECTED_BEFORE_INTERVIEW = "rejected_before_interview"
+STATUS_REJECTED_AFTER_INTERVIEW = "rejected_after_interview"
+
+# LEGACY. Rows written before the split carry a bare "rejected". They stay valid
+# and readable for ever — we do NOT migrate them, exactly as pre-Phase-N trend
+# rows keep working without delta fields. Readers treat a bare "rejected" as
+# "stage unknown" and fall back to the engagement markers (screening_interview /
+# interview_rounds). The UI no longer OFFERS it, so it can only shrink over time.
+STATUS_REJECTED = "rejected"
+
+REJECTION_STATUSES = (STATUS_REJECTED_BEFORE_INTERVIEW,
+                      STATUS_REJECTED_AFTER_INTERVIEW,
+                      STATUS_REJECTED)
 
 # The live ladder, in forward order. Index position defines "forward".
 LIVE_LADDER = (STATUS_APPLIED, STATUS_SCREENING, STATUS_INTERVIEW)
-TERMINAL_STATUSES = (STATUS_GHOSTED, STATUS_OFFER, STATUS_REJECTED, STATUS_WITHDRAWN)
+TERMINAL_STATUSES = (STATUS_GHOSTED, STATUS_OFFER,
+                     STATUS_REJECTED_BEFORE_INTERVIEW,
+                     STATUS_REJECTED_AFTER_INTERVIEW,
+                     STATUS_REJECTED,
+                     STATUS_WITHDRAWN)
 ALL_STATUSES = LIVE_LADDER + TERMINAL_STATUSES
+
+# Statuses the UI should OFFER. Legacy "rejected" is accepted on the way in (so
+# old rows can still be corrected) but never presented as a new choice.
+SELECTABLE_STATUSES = tuple(s for s in ALL_STATUSES if s != STATUS_REJECTED)
+
+
+def is_rejection(status: str) -> bool:
+    """True for any rejection, legacy or staged."""
+    return (status or "") in REJECTION_STATUSES
 
 # Days of silence (since the last forward signal) before a live row auto-ghosts.
 GHOST_AFTER_DAYS = 14

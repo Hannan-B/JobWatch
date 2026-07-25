@@ -22,6 +22,7 @@ import json
 import time
 import random
 import re
+import unicodedata
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -1961,6 +1962,788 @@ def sohohouse(config):
     return _merge_by_id(_jobs_from_vacancies(vac))
 
 
+def teamtailor(config):
+    """Teamtailor career sites — a recognised PLATFORM, not a single company.
+
+    Teamtailor (teamtailor.com) hosts thousands of employers' career sites. Each
+    tenant lives at either <subdomain>.teamtailor.com/jobs OR a CUSTOM DOMAIN the
+    employer maps to it (e.g. Yoto's careers.yotoplay.com/jobs). So, like the
+    webitrent/ciphr platform connectors, we key off the pasted URL's HOST rather
+    than assuming a teamtailor.com host, and any Teamtailor employer works by
+    pasting their careers URL.
+
+    WHY HTML, not the API: Teamtailor's public JSON:API (api.teamtailor.com/v1/jobs)
+    requires a private per-tenant token (Authorization: Token token=...), which we
+    don't have and won't use. The jobs are, however, fully SERVER-RENDERED into the
+    /jobs page, so we parse that markup with stdlib re/html — the same approach as
+    the V&A and CIPHR connectors (NO bs4 dependency). Confirmed live 2026-07-06
+    against careers.yotoplay.com.
+
+    Markup (confirmed): a single list container
+        <ul id="jobs_list_container" class="company-links">
+          <li ...>
+            <a href="https://<host>/jobs/<id>-<slug>"> <span.../> Title </a>
+            <div class="mt-1 text-md">
+              [<span>Department</span> · ]         <- PRESENT ONLY when the role
+              <span>Location</span> ·                  has a department
+              <span class="inline-flex ...">Remote-status <svg/></span>
+            </div>
+          </li>
+          ...
+        </ul>
+
+    - ID: the digits before the first '-' in /jobs/<id>-<slug> (stable, unique). (§E-1)
+    - TITLE: the <a> text (entities unescaped; the absolute-inset <span> stripped). (§1)
+    - DEPARTMENT: the FIRST meta <span> — but it's absent on roles with no
+      department, so we read the meta STRUCTURALLY, not positionally (the §6.10
+      lesson): drop the remote-status span (it carries the <svg>) and the "·"
+      divider spans, then of the remaining spans the LAST is the location and any
+      span before it is the department. Blank department is allowed (§1).
+    - LOCATION: the site/city text ("Yoto HQ - UK"); reported as-is so the app's
+      location filter narrows it. (§E-2)
+    - URL: the full absolute href on the tenant's host.
+    - PAGINATION: Teamtailor pages the list with ?page=N; we page until a page has
+      no job rows (a short/empty page = the end). (§E-3)
+    - DEDUP: merge by id. (§E-4)
+
+    config:
+        "url"  - the careers URL the user pasted (REQUIRED). We take its host and
+                 fetch <host>/jobs. (optional explicit override: "host".)
+
+    Custom HTML boards are fragile by nature (a Teamtailor theme change can move
+    these classes); if the parse ever returns 0 while the site clearly has roles,
+    re-capture one <li> block and adjust the patterns.
+    No login or cookies needed (public list); reuse BROWSER_HEADERS/http_get.
+    """
+    import html as _html
+
+    pasted = (config.get("url") or "").strip()
+    host = (config.get("host") or "").strip()
+    if pasted and not host:
+        host = urllib.parse.urlparse(
+            pasted if "://" in pasted else "https://" + pasted).netloc
+    if not host:
+        raise ConnectorError(
+            "The Teamtailor connector needs the careers URL (it carries the "
+            "tenant's host). Paste the careers page that lists the jobs.")
+    base = f"https://{host}"
+    list_url = f"{base}/jobs"
+
+    PAGE_LIMIT = 100      # safety ceiling; real tenants are far smaller
+
+    def _meta_fields(li):
+        """Department + location from a card's meta div, read structurally.
+        Returns (department, location); department is '' when the role has none."""
+        mdiv = re.search(r'<div[^>]*class="mt-1 text-md"[^>]*>(.*)', li, re.S)
+        if not mdiv:
+            return "", ""
+        meta = mdiv.group(1)
+        # Drop the remote-status span (the one that contains an <svg>/wifi icon).
+        meta = re.sub(r'<span[^>]*class="inline-flex[^"]*"[^>]*>.*?</span>', "",
+                      meta, flags=re.S)
+        # Drop the "·" divider spans.
+        meta = re.sub(r'<span[^>]*class="mx-\[2px\][^"]*"[^>]*>.*?</span>', "",
+                      meta, flags=re.S)
+        # Remaining spans, skipping layout-only ones (absolute-inset / border).
+        spans = re.findall(
+            r'<span(?![^>]*class="(?:block|absolute)[^"]*")[^>]*>(.*?)</span>',
+            meta, re.S)
+        vals = [_html.unescape(re.sub(r"<[^>]+>", "", s)).strip() for s in spans]
+        vals = [v for v in vals if v]
+        if len(vals) >= 2:
+            return vals[0], vals[1]      # department, location
+        if len(vals) == 1:
+            return "", vals[0]           # location only (no department)
+        return "", ""
+
+    def _parse(page):
+        out = []
+        mul = re.search(
+            r'<ul[^>]*id="jobs_list_container"[^>]*>(.*?)</ul>', page, re.S)
+        scope = mul.group(1) if mul else page
+        for lim in re.finditer(r"<li[^>]*>(.*?)</li>", scope, re.S):
+            li = lim.group(1)
+            am = re.search(r'<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', li, re.S)
+            if not am:
+                continue
+            href = _html.unescape(am.group(1))
+            title = _html.unescape(re.sub(r"<[^>]+>", "", am.group(2))).strip()
+            mid = re.search(r"/jobs/(\d+)", href)
+            jid = mid.group(1) if mid else ""
+            if not (jid and title):
+                continue
+            dept, location = _meta_fields(li)
+            url = href if href.startswith("http") else base + href
+            out.append(_job(id_=jid, title=title, location=location,
+                            department=dept, url=url))
+        return out
+
+    jobs = []
+    page_num = 1
+    while True:
+        url = list_url if page_num == 1 else f"{list_url}?page={page_num}"
+        for attempt in (1, 2):
+            try:
+                page = http_get(url)
+                break
+            except Exception:
+                if attempt == 2:
+                    page = ""
+                _polite_pause()
+        page_jobs = _parse(page) if page else []
+        if not page_jobs:
+            break               # empty/short page (or a failed page) = the end
+        jobs.extend(page_jobs)
+        page_num += 1
+        if page_num > PAGE_LIMIT:
+            break
+        _polite_pause()
+
+    return _merge_by_id(jobs)
+
+
+def cursor(config):
+    """Cursor / Anysphere (cursor.com/careers) — a single-company custom board.
+
+    HISTORY (matters, 2026-07-24): Cursor ran a hosted ASHBY board at
+    jobs.ashbyhq.com/cursor. That board is now switched off (404) and the roles
+    are served from cursor.com itself, so the standard-platform path is closed
+    and a pasted Ashby URL is dead. Watch for the §6.4 trap while re-checking:
+    jobs.ashbyhq.com returns HTTP 200 with a bare "enable JavaScript" SPA shell
+    for ANY path, so a 200 there proves nothing — check the body.
+
+    The list is fully SERVER-RENDERED into the careers page (Next.js App Router,
+    but the markup ships in the HTML — no flight-data or build-hash parsing
+    needed, unlike Soho House). Parsed with stdlib re/html, no bs4. Confirmed
+    against a live capture off the owner's Mac, 2026-07-24 (120 roles).
+
+    Source (confirmed):
+        GET https://cursor.com/careers
+    Markup (confirmed): each role is one <article>
+        <article class="flex grow-1 flex-col">
+          <a class="card card--text grow-1" href="/careers/<slug>">
+            <p class="type-base text-theme-text text-pretty">Title</p>
+            <div class="text-theme-text-sec flex shrink-0 items-center">
+              <span>Department</span><span class="mx-1">·</span>
+              <span>Full-time</span><span class="mx-1">·</span>
+              <span>San Francisco; New York</span>
+            </div>
+            <span class="btn-tertiary">Apply →</span>
+          </a>
+        </article>
+
+    - ID: the <slug> from /careers/<slug> — a stable, non-positional string
+      (DATA_FORMATS §"ids are opaque strings"). Cursor exposes no numeric req id.
+    - TITLE: the type-base <p> (entities unescaped — R&D-style "&amp;" is live
+      in 14 places on the board). (§6.9)
+    - DEPARTMENT / LOCATION: read STRUCTURALLY, never positionally (§6.10). The
+      meta div holds "Department · Employment-type · Location", but a role
+      missing a department would shift every field left. So we drop the "·"
+      divider spans, drop the EMPLOYMENT-TYPE span BY VALUE (_WORK_TYPES), then
+      take the LAST remaining span as the location and any earlier one as the
+      department. Blank department is allowed (§1); the location is the field
+      the hard filter gates on, so it is the one we protect.
+    - LOCATION FORMAT: multi-site roles arrive already ";"-joined
+      ("San Francisco; New York") — the same convention _merge_by_id emits, and
+      what filters.filter_by_location's semicolon handling expects. Reported
+      as-is; the app narrows it. (§E-2)
+    - URL: absolute on cursor.com.
+    - PAGINATION: none — the whole list ships in one page (confirmed: no paging
+      control, 120 unique roles). No page loop to get wrong.
+    - DEDUP: the page renders the SAME list TWICE (responsive desktop/mobile
+      markup), so a raw parse yields 240 rows for 120 roles. _merge_by_id
+      collapses them; both copies were byte-identical in the capture, so the
+      merge is lossless. This is exactly the double-counting §6.8 warns about.
+    - NOT SCOPABLE: the board has no server-side location query, so it stays out
+      of market_scope.SCOPABLE — broad fetch, then filters.py narrows. (§3.5)
+
+    config: none required (single company, fixed URL).
+
+    Custom boards are fragile by nature (§6.12): if this ever returns 0 while the
+    site clearly has roles, re-capture cursor.com/careers and adjust the patterns
+    — the connector raises a clear error saying so rather than reporting an empty
+    list, which would otherwise read as "every role removed".
+    """
+    import html as _html
+
+    URL = "https://cursor.com/careers"
+    BASE = "https://cursor.com"
+
+    # Employment-type tokens, matched BY VALUE so the meta is read structurally
+    # rather than by span position (§6.10).
+    _WORK_TYPES = {
+        "full-time", "part-time", "contract", "contractor", "freelance",
+        "internship", "intern", "temporary", "fixed-term", "full time",
+        "part time",
+    }
+    _DIVIDERS = {"·", "•", "|", "-", "–", "—"}
+
+    def _text(fragment):
+        return _html.unescape(re.sub(r"<[^>]+>", "", fragment)).strip()
+
+    def _meta_fields(article):
+        """(department, location) from a card's meta div, read structurally.
+        Department is '' when the role has none."""
+        m = re.search(
+            r'<div[^>]*class="[^"]*text-theme-text-sec[^"]*"[^>]*>(.*?)</div>',
+            article, re.S)
+        if not m:
+            return "", ""
+        vals = []
+        for sm in re.finditer(r"<span([^>]*)>(.*?)</span>", m.group(1), re.S):
+            attrs, txt = sm.group(1), _text(sm.group(2))
+            if "mx-1" in attrs:          # the "·" divider spans
+                continue
+            if not txt or txt in _DIVIDERS:
+                continue
+            vals.append(txt)
+        # Drop the employment type wherever it sits in the run.
+        vals = [v for v in vals if v.lower() not in _WORK_TYPES]
+        if not vals:
+            return "", ""
+        location = vals[-1]
+        department = vals[0] if len(vals) >= 2 else ""
+        return department, location
+
+    def _parse(page):
+        out = []
+        for am in re.finditer(r"<article\b[^>]*>(.*?)</article>", page, re.S):
+            art = am.group(1)
+            hm = re.search(r'href="(/careers/[^"#?]+)"', art)
+            if not hm:
+                continue                 # not a role card (or markup changed)
+            path = _html.unescape(hm.group(1))
+            slug = path.rstrip("/").rsplit("/", 1)[-1]
+            tm = re.search(
+                r'<p[^>]*class="[^"]*type-base[^"]*"[^>]*>(.*?)</p>', art, re.S)
+            title = _text(tm.group(1)) if tm else ""
+            if not (slug and title):
+                continue
+            dept, location = _meta_fields(art)
+            out.append(_job(id_=slug, title=title, location=location,
+                            department=dept, url=BASE + path))
+        return out
+
+    headers = dict(BROWSER_HEADERS)
+    headers["Accept"] = "text/html,application/xhtml+xml"
+
+    page = ""
+    for attempt in (1, 2):               # retry a failed fetch once (§6.7)
+        try:
+            page = http_get(URL, headers=headers)
+            break
+        except ConnectorError:
+            if attempt == 2:
+                raise
+            _polite_pause()
+
+    jobs = _parse(page)
+    if not jobs:
+        raise ConnectorError(
+            "Cursor's careers page returned no roles. The page markup has "
+            "probably changed — re-capture https://cursor.com/careers and "
+            "update the connector's patterns."
+        )
+    return _merge_by_id(jobs)
+
+
+def revolutpeople(config):
+    """Revolut People (revolutpeople.com) — a PLATFORM connector.
+
+    Revolut spun its internal hiring product out as a third-party ATS in 2024.
+    Tenants get revolutpeople.com/<tenant>/public/careers, and a clean public
+    JSON API behind it. One connector serves every tenant: the tenant slug comes
+    from the pasted URL. Confirmed live 2026-07-25 against Cleo (37 roles).
+
+    Source (confirmed, GET, JSON, NO auth and NO cookie needed — a plain
+    cookieless request returns 200 even though the site sits behind Cloudflare):
+        GET https://revolutpeople.com/api/<tenant>/external/v3/postings?page=<n>
+
+    Response shape (confirmed):
+        {"pages": {"next": null, "previous": null, "total": 1, "page_size": 100},
+         "count": 37,
+         "results": [{"id": "<uuid>", "title": "...",
+                      "locations": [{"name": "UK - Remote", "type": "remote",
+                                     "country": {"name": "United Kingdom"}}, ...],
+                      "function": {"name": "Engineering"},   # or NULL
+                      "is_featured": false}, ...]}
+
+    - ID: a UUID string. Opaque and stable (DATA_FORMATS: ids are strings).
+    - DEPARTMENT: function.name — but `function` is NULL on real roles (Product
+      Design Manager, Director of InfoSec), so it must be read defensively or a
+      naive .get("name") raises. Blank department is allowed (§1).
+    - LOCATION: `locations` is a LIST; roles routinely carry several ("Spain",
+      "UK - Remote", "United Kingdom"). Joined with "; " — the convention
+      _merge_by_id emits and filters.filter_by_location already splits on. Names
+      are de-duplicated, order preserved.
+      NOTE for expectations: this board tags by COUNTRY, not city — "United
+      Kingdom" and "UK - Remote", never "London". A London filter still matches
+      them via geo.py's country-level rule, but they arrive flagged
+      location_unclear ("city not specified") rather than as confirmed London
+      hits. That is the designed behaviour, not a bug.
+    - PAGINATION: ?page=N, bounded by pages.total. Requesting a page past the
+      end returns {"detail": "Invalid page."} (an HTTP error), so we never probe
+      past pages.total; a failure on a later page is caught and ends the crawl
+      rather than killing the run, with the completeness guard below as the net.
+    - COMPLETENESS GUARD: the payload states `count`. We compare it against what
+      we collected and raise rather than return a short list, which would read
+      as roles being removed. Same reasoning as the avature/successfactors
+      guards.
+    - NOT SCOPABLE at the source by city: stays out of market_scope.SCOPABLE.
+
+    ROBOTS: revolutpeople.com's robots.txt asks automated clients away. The
+    owner reviewed it and chose to proceed for personal, low-frequency use of a
+    public careers page. Recorded here so the decision is visible rather than
+    implicit (§11).
+
+    config = {"url": "<the tenant's public careers URL>"}
+    """
+    url_in = (config or {}).get("url", "")
+    if not str(url_in).strip():
+        raise ConnectorError(
+            "The Revolut People connector needs the careers URL, e.g. "
+            "https://revolutpeople.com/cleo/public/careers")
+
+    parsed = urllib.parse.urlparse(str(url_in).strip())
+    host = parsed.netloc or "revolutpeople.com"
+    scheme = parsed.scheme or "https"
+    segs = [s for s in parsed.path.split("/") if s]
+    tenant = segs[0] if segs and segs[0].lower() not in ("api", "public") else ""
+    if not tenant:
+        raise ConnectorError(
+            f"Couldn't read the company from the Revolut People URL {url_in!r}. "
+            f"It should look like https://{host}/<company>/public/careers")
+
+    origin = f"{scheme}://{host}"
+    api = f"{origin}/api/{tenant}/external/v3/postings"
+
+    def _slugify(text):
+        """Title -> the URL slug Revolut People uses. Confirmed against a live
+        link: 'Senior / Lead Data Scientist, Product Analytics' ->
+        'senior-lead-data-scientist-product-analytics'. Any run of non
+        alphanumerics collapses to a single hyphen, so '/', ',', '|', '&' and
+        brackets all fold away."""
+        t = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+        return re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")
+
+    def _job_url(jid, title):
+        """The public posting URL. The API returns NO link, so it is rebuilt as
+            /<tenant>/public/careers/position/<title-slug>-<id>
+        confirmed live 2026-07-25. If Revolut ever changes the slug rule, this
+        is the single place to fix — the id is the trailing UUID either way."""
+        slug = _slugify(title)
+        tail = f"{slug}-{jid}" if slug else jid
+        return f"{origin}/{tenant}/public/careers/position/{tail}"
+
+    def _fetch(page):
+        return json.loads(http_get(f"{api}?page={page}", headers=BROWSER_HEADERS))
+
+    def _parse(payload):
+        out = []
+        for r in (payload.get("results") or []):
+            jid = str(r.get("id") or "").strip()
+            title = str(r.get("title") or "").strip()
+            if not (jid and title):
+                continue
+            # `function` is null on real roles — never chain .get() blindly.
+            fn = r.get("function")
+            dept = str((fn or {}).get("name") or "").strip() if isinstance(fn, dict) else ""
+            names, seen = [], set()
+            for loc in (r.get("locations") or []):
+                if not isinstance(loc, dict):
+                    continue
+                nm = str(loc.get("name") or "").strip()
+                if not nm:
+                    country = loc.get("country")
+                    nm = str((country or {}).get("name") or "").strip() \
+                        if isinstance(country, dict) else ""
+                if nm and nm not in seen:
+                    seen.add(nm)
+                    names.append(nm)
+            out.append(_job(id_=jid, title=title, location="; ".join(names),
+                            department=dept, url=_job_url(jid, title)))
+        return out
+
+    first = _fetch(1)
+    jobs = _parse(first)
+    pages = first.get("pages") or {}
+    total_pages = int(pages.get("total") or 1)
+    count = int(first.get("count") or 0)
+
+    page = 2
+    while page <= total_pages and page <= 200:
+        _polite_pause()
+        try:
+            jobs.extend(_parse(_fetch(page)))
+        except ConnectorError:
+            # A page past the end answers {"detail": "Invalid page."}; treat any
+            # later-page failure as the end of the list and let the guard judge.
+            break
+        page += 1
+
+    jobs = _merge_by_id(jobs)
+
+    if not jobs:
+        raise ConnectorError(
+            f"Revolut People returned no roles for '{tenant}'. Check the company "
+            f"slug in the URL, or the board may genuinely be empty.")
+
+    if count:
+        shortfall = count - len(jobs)
+        allowed = max(3, count // 100)
+        if shortfall > allowed:
+            raise ConnectorError(
+                f"Revolut People fetch looks incomplete: the API reports {count} "
+                f"roles but only {len(jobs)} were collected ({shortfall} missing, "
+                f"more than the {allowed} tolerated). Reporting this rather than "
+                f"a short list, which would read as roles being removed.")
+    return jobs
+
+
+def successfactors(config):
+    """SAP SuccessFactors career sites (Recruiting Marketing / Career Site
+    Builder) — a PLATFORM connector.
+
+    Used across UK publishing, retail, public sector and enterprise. One
+    connector serves every tenant: the host and the SITE ID both come from the
+    pasted URL, never hard-coded. Confirmed live 2026-07-25 against Penguin
+    Random House UK (PRH_UK, 19 roles, all London).
+
+    Source (confirmed):
+        GET https://<host>/<site>/search/?q=&sortColumn=referencedate
+            &sortDirection=desc&startrow=<n>
+    Server-rendered HTML table — no JS, no session token, no anti-bot wall.
+    Each role is one <tr class="data-row">:
+        <tr class="data-row">
+          <td class="colTitle">
+            <span class="jobTitle hidden-phone">
+              <a href="/PRH_UK/job/<slug>/<id>/" class="jobTitle-link">Title</a></span>
+            <div class="jobdetail-phone visible-phone">      <-- SAME role again
+              <a class="jobTitle-link" href="...">Title</a>
+              <span class="jobLocation">London, United Kingdom, SW11 7BW</span>
+              <span class="jobDate">24 Jul 2026</span></div></td>
+          <td class="colLocation hidden-phone">
+            <span class="jobLocation">London, United Kingdom, SW11 7BW</span></td>
+        </tr>
+
+    - SITE SCOPING MATTERS MORE HERE THAN ANYWHERE ELSE. Many SuccessFactors
+      installs are shared by a whole GROUP of companies, one site id each. The
+      bare /search/ on Penguin's host is Bertelsmann's: 826 roles across RTL,
+      Arvato, Riverty, Territory, Sonopress and others, with PRH one tenant
+      among many. The site id lives in the path (/PRH_UK/, /DK_UK/, /ARVATO/),
+      so the connector ALWAYS scopes to the site id from the pasted URL. Point
+      it at a group-wide URL and you will track the group. (Dorling Kindersley
+      is DK_UK — a separate board from PRH_UK despite the same London address.)
+    - ID: the numeric id from /job/<slug>/<id>/ — stable and unique.
+    - TITLE: the jobTitle-link text (entities unescaped; "&" is common here).
+    - LOCATION: the first <span class="jobLocation"> in the row.
+    - DOUBLE MARKUP: each row renders the title link TWICE (a desktop
+      .hidden-phone copy and a .visible-phone copy) and the location twice too.
+      We parse per-ROW and take the first of each, so a row yields one job;
+      _merge_by_id is the backstop. (§6.8 — the double-count trap, same shape as
+      the Cursor board.)
+    - DEPARTMENT is always "" — the results table carries title, location and
+      date only. Reading departments would need one detail fetch per role.
+      Blank department is allowed (DATA_FORMATS §1).
+    - PAGINATION: ?startrow=N, page size read from page 1 (SuccessFactors
+      serves 25 by default). We PIN THE SORT (referencedate desc) rather than
+      relying on the site's default order — an unpinned sort is what made
+      Avature's paging fail to tile. If the completeness check still comes up
+      short (ties on the sort key can shuffle), the crawl is retried once with
+      HALF-STEPS so consecutive windows overlap and absorb the drift.
+    - COMPLETENESS GUARD: the page prints its own total —
+        <span class="paginationLabel">Results <b>1 – 19</b> of <b>19</b></span>
+      We compare it against what we collected and raise rather than return a
+      short list, which would read as roles being removed.
+    - NOT SCOPABLE at the source by city: stays out of market_scope.SCOPABLE.
+
+    config = {"url": "<any URL on the tenant's SuccessFactors site>"}
+    """
+    import html as _html
+
+    url_in = (config or {}).get("url", "")
+    if not str(url_in).strip():
+        raise ConnectorError(
+            "The SuccessFactors connector needs the careers URL, e.g. "
+            "https://jobsearch.createyourowncareer.com/PRH_UK/search/")
+
+    parsed = urllib.parse.urlparse(str(url_in).strip())
+    host = parsed.netloc
+    if not host:
+        raise ConnectorError(f"Couldn't read a host from the URL: {url_in!r}")
+
+    # First path segment is the SITE ID unless it's one of the site's own pages.
+    _PAGES = {"search", "job", "content", "go", "viewalljobs", "talentcommunity",
+              "jobs", "login", "profile"}
+    segs = [s for s in parsed.path.split("/") if s]
+    site = segs[0] if segs and segs[0].lower() not in _PAGES else ""
+    scheme = parsed.scheme or "https"
+    base = f"{scheme}://{host}/{site}/search/" if site else f"{scheme}://{host}/search/"
+    origin = f"{scheme}://{host}"
+
+    ROW = re.compile(r'(?s)<tr[^>]*class="[^"]*\bdata-row\b[^"]*"[^>]*>(.*?)</tr>')
+    LINK = re.compile(r'<a[^>]*?href="([^"]+)"[^>]*?class="[^"]*jobTitle-link[^"]*"[^>]*>(.*?)</a>'
+                      r'|<a[^>]*?class="[^"]*jobTitle-link[^"]*"[^>]*?href="([^"]+)"[^>]*>(.*?)</a>',
+                      re.S)
+    LOC = re.compile(r'(?s)<span[^>]*class="[^"]*\bjobLocation\b[^"]*"[^>]*>(.*?)</span>')
+    TOTAL = re.compile(r'(?is)paginationLabel.*?\bof\b\s*<b>\s*([\d,]+)\s*</b>')
+
+    def _text(fragment):
+        return _html.unescape(re.sub(r"<[^>]+>", "", fragment)).strip()
+
+    def _parse_page(page):
+        out = []
+        for row in ROW.findall(page):
+            m = LINK.search(row)                 # first link only: the row
+            if not m:                            # renders the same role twice
+                continue
+            href = _html.unescape(m.group(1) or m.group(3) or "")
+            title = _text(m.group(2) or m.group(4) or "")
+            jid = href.rstrip("/").rsplit("/", 1)[-1]
+            if not (jid and title):
+                continue
+            lm = LOC.search(row)                 # first location only, same reason
+            out.append(_job(
+                id_=jid,
+                title=title,
+                location=_text(lm.group(1)) if lm else "",
+                department="",                   # not in the results table
+                url=href if href.startswith("http") else origin + href,
+            ))
+        return out
+
+    def _fetch(startrow):
+        q = "q=&sortColumn=referencedate&sortDirection=desc"
+        u = f"{base}?{q}" if startrow <= 0 else f"{base}?{q}&startrow={startrow}"
+        for attempt in (1, 2):                   # retry a failed page once
+            try:
+                return http_get(u, headers=BROWSER_HEADERS)
+            except ConnectorError:
+                if attempt == 2:
+                    raise
+                _polite_pause()
+
+    first = _fetch(0)
+    page1 = _parse_page(first)
+    if not page1:
+        raise ConnectorError(
+            f"No roles found on {base}. Either this site id has no open jobs, "
+            f"or the SuccessFactors markup has changed — re-capture the search "
+            f"page and check for <tr class=\"data-row\">.")
+
+    tm = TOTAL.search(first)
+    total = int(tm.group(1).replace(",", "")) if tm else 0
+    page_size = len(page1)
+    MAX_REQUESTS = 400
+
+    def _crawl(step):
+        got_all, start, reqs, empties = list(page1), step, 1, 0
+        while reqs < MAX_REQUESTS:
+            if total and len(_merge_by_id(got_all)) >= total:
+                break
+            if total and start >= total:
+                break
+            if not total and empties >= 2:
+                break
+            _polite_pause()
+            rows = _parse_page(_fetch(start))
+            reqs += 1
+            empties = empties + 1 if not rows else 0
+            if not rows and (not total or start >= total - page_size):
+                break
+            got_all.extend(rows)
+            start += step
+        return _merge_by_id(got_all), reqs
+
+    jobs, requests = _crawl(page_size)
+
+    # Completeness guard. A pinned sort should tile cleanly, but ties on the
+    # sort key can still shuffle rows between requests, so a short crawl is
+    # retried with overlapping windows before we give up (the Avature fix).
+    if total:
+        allowed = max(3, total // 100)
+        if total - len(jobs) > allowed and page_size > 1:
+            jobs, extra = _crawl(max(1, page_size // 2))
+            requests += extra
+        shortfall = total - len(jobs)
+        if shortfall > allowed:
+            raise ConnectorError(
+                f"SuccessFactors fetch looks incomplete: the site reports "
+                f"{total} roles but only {len(jobs)} were collected across "
+                f"{requests} pages ({shortfall} missing, more than the "
+                f"{allowed} tolerated), even after retrying with overlapping "
+                f"pages. Reporting this rather than a short list, which would "
+                f"read as roles being removed.")
+    return jobs
+
+
+def avature(config):
+    """Avature career portals (*.avature.net) — a PLATFORM connector.
+
+    Avature hosts careers portals for large enterprise employers (Bloomberg,
+    and many others). One connector serves every tenant: the subdomain and the
+    portal path are read from the pasted URL, never hard-coded.
+
+    Source (confirmed live 2026-07-25 on bloomberg.avature.net, 426 roles):
+        GET https://<tenant>.avature.net/<portal>/SearchJobs?jobOffset=<n>
+    Server-rendered HTML — no JS, no session token, no anti-bot wall.
+    Each role is one <article class="article article--result">:
+        <h3 class="article__header__text__title ...">
+          <a href="https://<host>/<portal>/JobDetail/<slug>/<id>">Title</a></h3>
+        <span class="list-item-location">London, United Kingdom</span>
+
+    THE HARD PART — Avature's paging DOES NOT TILE (measured, not assumed):
+      * jobRecordsPerPage is IGNORED. Ask for 100, get 12; Avature even rewrites
+        its own pagination links back to 12. The page size is fixed.
+      * sortBy is IGNORED too. Passing a sort field returned byte-identical
+        results, so the order cannot be pinned.
+      * The result order DRIFTS between requests. Adjacent pages re-serve roles
+        (offsets 60 and 72 shared 3; 168 and 180 shared 3), and pages are not
+        ordered by id — offset 132 spanned 20363-20529 while offset 144 spanned
+        20446-20511, nested INSIDE it. A straight 12-step crawl of Bloomberg
+        collected 406 of 426: every role re-served on a later page is one that
+        drifted out of an earlier window and was never returned. The missing set
+        varies per run, which for JobWatch is worse than missing data — compare
+        would report those roles REMOVED, then ADDED again next check, spraying
+        phantom churn into the run verdict and the trend deltas.
+
+    THE FIX, in two parts:
+      1. HALF-STEP PAGING. Step by half a page (6) instead of a whole one, so
+         consecutive windows overlap by 6 positions and absorb a role drifting
+         up to 6 places. Observed drift is 1-3, so that is roughly double
+         cover. The duplicates this creates cost nothing — _merge_by_id already
+         collapses them. Price: ~71 requests for Bloomberg instead of 36.
+      2. A COMPLETENESS GUARD. Avature prints its own total:
+             <div class="list-controls__text__legend" aria-label="426 results">
+         We parse it, compare against what we actually collected, and raise a
+         clear ConnectorError when materially short. Half-stepping is a
+         MITIGATION, not a proof — if drift ever exceeds the overlap, this is
+         what catches it. A quietly incomplete fetch would present itself as the
+         whole board and read as mass removals; failing loudly is the honest
+         option (same reasoning as the empty-parse guards elsewhere here).
+      A small shortfall is tolerated because the board legitimately changes
+      mid-crawl — Bloomberg's own total moved 436 -> 426 during testing.
+
+    QUERY STRING IS DROPPED, deliberately. A pasted portal URL often carries a
+    location facet ("1845=%5B162558%5D" = London for Bloomberg's tenant). Those
+    field/option ids are opaque and tenant-specific, so nothing can map a chosen
+    city onto them. Honouring one would pin the fetch to a single city, and a
+    later change to locations_allowed would silently drop roles rather than
+    widen — the incompleteness failure market_scope.py exists to prevent. So we
+    fetch the whole board and let filters.py narrow, exactly as the teamtailor
+    connector already does with a pasted ?location_id=. Not scopable; stays out
+    of market_scope.SCOPABLE.
+
+    DEPARTMENT is always "" — the Avature list view carries title and location
+    only. Reading departments would mean one detail fetch per role (400+), which
+    is not a reasonable cost. Blank department is allowed (DATA_FORMATS §1);
+    Avature companies simply won't contribute to department trends.
+
+    config = {"url": "<any URL on the tenant's Avature portal>"}
+    """
+    import html as _html
+
+    url_in = (config or {}).get("url", "")
+    if not str(url_in).strip():
+        raise ConnectorError(
+            "The Avature connector needs the careers URL, e.g. "
+            "https://bloomberg.avature.net/careers/SearchJobs")
+
+    parsed = urllib.parse.urlparse(str(url_in).strip())
+    host = parsed.netloc
+    if not host:
+        raise ConnectorError(f"Couldn't read a host from the Avature URL: {url_in!r}")
+    segs = [s for s in parsed.path.split("/") if s]
+    portal = segs[0] if segs and segs[0].lower() != "searchjobs" else "careers"
+    base = f"{parsed.scheme or 'https'}://{host}/{portal}/SearchJobs"
+
+    ART = re.compile(r'(?s)<article[^>]*class="[^"]*article--result[^"]*"[^>]*>(.*?)</article>')
+    TITLE = re.compile(r'(?s)<h3[^>]*>\s*<a[^>]*href="([^"]*?/JobDetail/[^"]*?)"[^>]*>(.*?)</a>')
+    LOC = re.compile(r'(?s)<span[^>]*class="[^"]*list-item-location[^"]*"[^>]*>(.*?)</span>')
+    TOTAL = re.compile(r'aria-label="\s*([\d,]+)\s*results?\s*"')
+
+    def _text(fragment):
+        return _html.unescape(re.sub(r"<[^>]+>", "", fragment)).strip()
+
+    def _parse_page(page):
+        out = []
+        for art in ART.findall(page):
+            m = TITLE.search(art)
+            if not m:
+                continue
+            href, title = _html.unescape(m.group(1)), _text(m.group(2))
+            jid = href.rstrip("/").rsplit("/", 1)[-1]
+            if not (jid and title):
+                continue
+            locs = [_text(x) for x in LOC.findall(art)]
+            out.append(_job(
+                id_=jid,
+                title=title,
+                location="; ".join([l for l in locs if l]),
+                department="",                     # not in the list view
+                url=href,
+            ))
+        return out
+
+    def _fetch(offset):
+        u = base if offset <= 0 else f"{base}?jobOffset={offset}"
+        for attempt in (1, 2):                     # retry a failed page once
+            try:
+                return http_get(u, headers=BROWSER_HEADERS)
+            except ConnectorError:
+                if attempt == 2:
+                    raise
+                _polite_pause()
+
+    first = _fetch(0)
+    rows = _parse_page(first)
+    if not rows:
+        raise ConnectorError(
+            f"No roles found on {base}. The Avature portal markup may have "
+            f"changed, or this portal has no open jobs — re-capture the page "
+            f"and check for <article class=\"article article--result\">.")
+
+    tm = TOTAL.search(first)
+    total = int(tm.group(1).replace(",", "")) if tm else 0
+
+    page_size = len(rows)                          # Avature fixes this (12)
+    step = max(1, page_size // 2)                  # half-step: windows overlap
+    MAX_REQUESTS = 400                             # hard stop, never hammer
+
+    collected = list(rows)
+    offset, requests, empty_runs = step, 1, 0
+    while requests < MAX_REQUESTS:
+        if total and offset >= total:
+            break
+        if not total and empty_runs >= 2:
+            break
+        _polite_pause()
+        page = _fetch(offset)
+        requests += 1
+        got = _parse_page(page)
+        empty_runs = empty_runs + 1 if not got else 0
+        if not got and total and offset >= total - page_size:
+            break
+        collected.extend(got)
+        offset += step
+
+    jobs = _merge_by_id(collected)
+
+    # Completeness guard — see the docstring. Tolerate a small, honest drift.
+    if total:
+        shortfall = total - len(jobs)
+        allowed = max(3, total // 100)
+        if shortfall > allowed:
+            raise ConnectorError(
+                f"Avature fetch looks incomplete: the board reports {total} "
+                f"roles but only {len(jobs)} were collected across {requests} "
+                f"pages ({shortfall} missing, more than the {allowed} tolerated). "
+                f"Avature reshuffles results between requests, so a role can "
+                f"drift out of every page window. Reporting this rather than a "
+                f"short list, which would read as roles being removed.")
+    return jobs
+
+
 def smartrecruiters(config):
     """config = {"company": "<company-id>"}  paginates 100 at a time."""
     company = config["company"]
@@ -2135,6 +2918,11 @@ CONNECTORS = {
     "webitrent":       (webitrent,       ["url"],     "MHR iTrent web recruitment (*.webitrent.com) — anonymous-session JSON list; UK public-sector/cultural employers"),
     "ciphr":           (ciphr,           ["url"],     "CIPHR iRecruit (*.ciphr-irecruit.com) — server-rendered HTML vacancy table; UK public-sector/cultural employers"),
     "sohohouse":       (sohohouse,       [],          "Soho House Careers (careers.sohohouse.com) — Next.js static vacancy JSON; reads build id then the data file"),
+    "teamtailor":      (teamtailor,      ["url"],     "Teamtailor career sites (*.teamtailor.com or a custom domain) — server-rendered HTML job list; UK/EU employers. Needs the careers URL."),
+    "cursor":          (cursor,          [],          "Cursor / Anysphere (cursor.com/careers) — server-rendered HTML list; slug ids, list rendered twice so merged by id"),
+    "revolutpeople":   (revolutpeople,   ["url"],     "Revolut People (revolutpeople.com/<company>/public/careers) — public JSON API, no auth. Needs the careers URL."),
+    "successfactors":  (successfactors,  ["url"],     "SAP SuccessFactors career sites (Recruiting Marketing / Career Site Builder). Server-rendered results table; scopes to the SITE ID in the pasted URL, since many installs are shared by a whole group. Needs the careers URL."),
+    "avature":         (avature,         ["url"],     "Avature career portals (*.avature.net) — enterprise employers. Server-rendered HTML; pages by half-steps because Avature's result order drifts, with a completeness guard. Needs the careers URL."),
 }
 
 

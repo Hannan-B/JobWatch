@@ -166,12 +166,97 @@ def _detect_webitrent(url, host, path, query):
     return cfg
 
 
+# Confirmed SAP SuccessFactors CUSTOM DOMAINS. Most SuccessFactors career sites
+# run on the employer's own domain rather than *.successfactors.com, and a custom
+# domain is indistinguishable from any other site by URL alone — so, exactly as
+# with Teamtailor, we recognise these by an explicit allow-list. Add a host here
+# only after confirming it (page assets served from rmkcdn.successfactors.com, a
+# "careerSiteCompanyId" cookie, or /<SITE_ID>/search/ paths).
+_SUCCESSFACTORS_CUSTOM_DOMAINS = {
+    "jobsearch.createyourowncareer.com",   # Bertelsmann group: PRH_UK, DK_UK, ...
+}
+
+
+def _detect_revolutpeople(url, host, path, query):
+    # revolutpeople.com/<company>/public/careers — Revolut's ATS, sold to other
+    # employers since 2024. The company slug is the first path segment and is
+    # surfaced as `tenant` so the suggested key reads "cleo", not "revolutpeople".
+    if "revolutpeople.com" not in host:
+        return None
+    cfg = {"url": url, "host": host}
+    segs = [s for s in (path or "").split("/") if s]
+    if segs and segs[0].lower() not in ("api", "public"):
+        cfg["tenant"] = re.sub(r"[^a-z0-9-]", "", segs[0].lower())
+    return cfg
+
+
+def _detect_successfactors(url, host, path, query):
+    # SAP SuccessFactors Recruiting Marketing / Career Site Builder.
+    # The SITE ID (first path segment, e.g. PRH_UK) matters: many installs are
+    # shared by a whole group, and an unscoped URL tracks the group, not the
+    # company. We surface it as `tenant` so the suggested key reads "prh-uk"
+    # rather than the shared host label.
+    if not (host.endswith(".successfactors.com")
+            or host in _SUCCESSFACTORS_CUSTOM_DOMAINS):
+        return None
+    cfg = {"url": url, "host": host}
+    pages = {"search", "job", "content", "go", "viewalljobs", "talentcommunity",
+             "jobs", "login", "profile"}
+    segs = [s for s in (path or "").split("/") if s]
+    if segs and segs[0].lower() not in pages:
+        cfg["tenant"] = segs[0].lower().replace("_", "-")
+    return cfg
+
+
+def _detect_avature(url, host, path, query):
+    # *.avature.net - Avature career portals (large enterprise employers).
+    # PLATFORM connector: the tenant subdomain and the portal path both come from
+    # the pasted URL, so one connector serves every Avature employer.
+    # Any query string is DELIBERATELY ignored by the connector (see connectors.
+    # avature): a pasted URL often carries a location facet like
+    # "1845=[162558]", and honouring it would pin the fetch to one city, so a
+    # later change to the user's chosen cities would silently drop roles.
+    if not host.endswith(".avature.net"):
+        return None
+    return {"url": url, "host": host}
+
+
 def _detect_ciphr(url, host, path, query):
     # *.ciphr-irecruit.com - CIPHR iRecruit (UK public-sector / cultural).
     # The connector needs the vacancy-list URL (it carries the tenant subdomain).
     if "ciphr-irecruit.com" not in host:
         return None
     return {"url": url, "host": host}
+
+
+# Confirmed Teamtailor CUSTOM DOMAINS (careers sites on the employer's own domain
+# rather than *.teamtailor.com). A custom domain is indistinguishable from any
+# other site by URL alone, so we recognise these by an explicit allow-list. Add a
+# host here only after confirming the company runs on Teamtailor (careers-page
+# footer says "by Teamtailor" / images on teamtailor-cdn.com / a
+# /jobs/faceted_search_data endpoint). Hosts are lowercase, no scheme.
+_TEAMTAILOR_CUSTOM_DOMAINS = {
+    "careers.yotoplay.com",   # Yoto (confirmed 2026-07-06)
+    "careers.cazoo.co.uk",    # Cazoo (confirmed 2026-07-06)
+}
+
+
+def _detect_teamtailor(url, host, path, query):
+    # Teamtailor career sites (a hosted ATS platform). The connector needs the
+    # careers URL (it carries the tenant host); we pass both the full URL and host.
+    #
+    # Two ways a Teamtailor site is recognised:
+    #   1. NATIVE host: *.teamtailor.com — always Teamtailor.
+    #   2. CUSTOM DOMAIN: many tenants map their own domain (e.g. Yoto's
+    #      careers.yotoplay.com) with no "teamtailor" in the host. Those can't be
+    #      told apart from any other custom site by URL shape alone, so we keep a
+    #      small ALLOW-LIST of confirmed Teamtailor custom domains. Add a host here
+    #      once you've confirmed (via the careers page footer / DevTools) that a
+    #      company runs on Teamtailor — it then pastes-and-adds like any Tier-1
+    #      board instead of dead-ending at the Tier-3 build guide.
+    if "teamtailor.com" in host or host in _TEAMTAILOR_CUSTOM_DOMAINS:
+        return {"url": url, "host": host}
+    return None
 
 
 # Order matters only for readability; hosts are mutually exclusive in practice.
@@ -187,6 +272,10 @@ _RECOGNISERS = [
     ("pinpoint",        _detect_pinpoint,        1),
     ("webitrent",       _detect_webitrent,       1),
     ("ciphr",           _detect_ciphr,           1),
+    ("avature",         _detect_avature,         1),
+    ("successfactors",  _detect_successfactors,  1),
+    ("revolutpeople",   _detect_revolutpeople,   1),
+    ("teamtailor",      _detect_teamtailor,      1),
 ]
 
 
@@ -198,6 +287,25 @@ _MARKETING_HINTS = {
                      "'https://job-boards.greenhouse.io/anthropic'.",
     "lovable.dev":   "Lovable's jobs are on Ashby or Greenhouse - open the "
                      "careers page, click a job, and copy the URL it lands on.",
+    "sumup.com":     "SumUp's real board is Greenhouse - try the URL "
+                     "'https://boards.greenhouse.io/sumup'.",
+    "partly.com":    "Partly's real board is Ashby - try the URL "
+                     "'https://jobs.ashbyhq.com/partly.com'.",
+    "beam.org":      "Beam's real board is Ashby - try the URL "
+                     "'https://jobs.ashbyhq.com/beam-up'.",
+    "choco.com":     "Choco's real board is Ashby - try the URL "
+                     "'https://jobs.ashbyhq.com/choco'.",
+    "anysphere.inc": "Anysphere is Cursor's parent company; the jobs live on "
+                     "Cursor's own board - try 'https://cursor.com/careers'.",
+    # CareerPuck is a branded front-end that proxies a real ATS (Greenhouse,
+    # Lever, or Ashby). The underlying platform is in the API's atsSourcePlatform
+    # field: open 'https://api.careerpuck.com/v1/public/job-boards/<company>',
+    # read atsSourcePlatform, then add via that platform's board (usually the same
+    # slug) - e.g. Choco -> Ashby -> 'https://jobs.ashbyhq.com/choco'.
+    "careerpuck.com": "This is a CareerPuck front-end over a real ATS. Open "
+                      "'https://api.careerpuck.com/v1/public/job-boards/<company>' "
+                      "and read 'atsSourcePlatform' (greenhouse/lever/ashby), then "
+                      "add the company via that platform's board (same slug).",
 }
 
 
@@ -288,6 +396,16 @@ def detect(url: str) -> dict:
             "provider": "sohohouse", "config": {}, "suggested_key": "sohohouse",
             "display_guess": "Soho House", "tier": 1, "confident": True,
             "message": "Recognised Soho House Careers - a built-in connector, just add it.",
+        }
+    # Cursor (Anysphere) — cursor.com/careers, a server-rendered custom board.
+    # NOTE: Cursor USED to run a hosted Ashby board; jobs.ashbyhq.com/cursor now
+    # 404s, so the Ashby recogniser below would produce a dead board token if a
+    # stale Ashby URL were pasted. The live list is on cursor.com.
+    if "cursor.com" in host and "careers" in (host + path):
+        return {
+            "provider": "cursor", "config": {}, "suggested_key": "cursor",
+            "display_guess": "Cursor", "tier": 1, "confident": True,
+            "message": "Recognised Cursor Careers - a built-in connector, just add it.",
         }
 
     # Try each recogniser.

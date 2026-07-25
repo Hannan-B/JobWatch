@@ -50,6 +50,16 @@ _VAGUE_ANYWHERE = {
     "worldwide", "global", "flexible", "various", "multiple locations",
 }
 
+# Work-ARRANGEMENT words that describe HOW a role is worked, not WHERE. Boards
+# routinely glue one onto a country ("Hybrid UK", "Remote UK", "On-site UK").
+# These carry no geography, so for location classification they're transparent:
+# a role tagged "Hybrid UK" should reduce to "UK" and be treated exactly like a
+# country-only role (matched-and-tagged under a UK-city filter; hidden for a
+# foreign country). We strip them from the token set before the country-only
+# test so the leftover tokens are purely places. ("remote" stays in
+# _VAGUE_ANYWHERE too, so a BARE "Remote" with no country still goes to review.)
+_ARRANGEMENT_WORDS = {"hybrid", "remote", "on-site", "onsite", "in-office", "office"}
+
 # Some employers tag a role with a VENUE / BUILDING / CAMPUS name instead of a
 # city — e.g. the National Gallery's board reports every role's location as
 # "The National Gallery", never "London". Pure city-text matching then drops all
@@ -60,9 +70,63 @@ _VAGUE_ANYWHERE = {
 # is left untouched (kept truthful), and a matched-via-site role is tagged so the
 # UI can show "London — site not a city" the same way country-only roles are.
 # Keys are _norm()'d site strings; values are the canonical city (lowercase).
+#
+# Two kinds of entry live here:
+#   1. SITE / HQ labels — a building or company HQ that isn't a city name but
+#      sits in a known city ("The National Gallery" → london; "Chip HQ" → london).
+#      Company-specific; added as we confirm them on real boards.
+#   2. LONDON BOROUGHS + confirmed areas — several boards (Teamtailor tenants like
+#      Cazoo, Chip) tag roles by the specific London BOROUGH or district
+#      ("Richmond upon Thames", "Shoreditch") rather than "London". Pure city-text
+#      matching then drops them from a "London" filter even though they ARE in
+#      Greater London. Mapping the 32 official boroughs → london fixes this for any
+#      such board at once. Full official borough names are used (never bare
+#      "Richmond"/"Kingston"), so the exact-string match can't pull in Richmond VA
+#      or Kingston, Jamaica.
 _SITE_CITY = {
+    # --- Site / HQ labels ---
     "the national gallery": "london",
     "national gallery": "london",
+    "chip hq": "london",                 # Chip — 186 Shoreditch High St, London
+    "yoto hq": "london",                 # Yoto — HQ in London (Teamtailor board
+                                         # tags roles "Yoto HQ - UK")
+    # --- London areas confirmed in use on live boards ---
+    "shoreditch": "london",              # Chip
+    # --- The 32 London boroughs (+ the City of London) ---
+    "city of london": "london",
+    "barking and dagenham": "london",
+    "barnet": "london",
+    "bexley": "london",
+    "brent": "london",
+    "bromley": "london",
+    "camden": "london",
+    "croydon": "london",
+    "ealing": "london",
+    "enfield": "london",
+    "greenwich": "london",
+    "hackney": "london",
+    "hammersmith and fulham": "london",
+    "haringey": "london",
+    "harrow": "london",
+    "havering": "london",
+    "hillingdon": "london",
+    "hounslow": "london",
+    "islington": "london",
+    "kensington and chelsea": "london",
+    "kingston upon thames": "london",
+    "lambeth": "london",
+    "lewisham": "london",
+    "merton": "london",
+    "newham": "london",
+    "redbridge": "london",
+    "richmond upon thames": "london",    # Cazoo
+    "southwark": "london",
+    "sutton": "london",
+    "tower hamlets": "london",
+    "waltham forest": "london",
+    "wandsworth": "london",
+    "westminster": "london",
+    "city of westminster": "london",
 }
 
 
@@ -124,6 +188,35 @@ def filter_by_location(jobs: list, locations_allowed: list) -> dict:
     matched, ambiguous, elsewhere = [], [], []
 
     for job in jobs:
+        raw_loc = job.get("location", "")
+
+        # MULTI-SITE role: some boards (Ashby, and our own _merge_by_id) join a
+        # role's several locations with "; " into one string, e.g.
+        # "Remote - Europe; Remote - United Kingdom; Remote - Italy". Each part is
+        # an INDEPENDENT place the role is open in, so the role should match if
+        # ANY single part matches the filter. Splitting on ";" and re-running the
+        # same classifier on each part reuses every rule below (city, site-map,
+        # country fallback, arrangement words) with no duplicated logic. Verdict
+        # precedence: matched > ambiguous > elsewhere. We keep the ORIGINAL job
+        # (full multi-site location string preserved/truthful), and carry the
+        # winning part's country-only / via-site tags onto it.
+        parts = [p.strip() for p in str(raw_loc).split(";") if p.strip()]
+        if len(parts) > 1:
+            sub = filter_by_location(
+                [{**job, "location": p} for p in parts], locations_allowed)
+            if sub["matched"]:
+                won = sub["matched"][0]
+                j = dict(job)
+                j["location_country_only"] = won.get("location_country_only", False)
+                if won.get("location_via_site"):
+                    j["location_via_site"] = True
+                matched.append(j)
+            elif sub["ambiguous"]:
+                ambiguous.append(job)
+            else:
+                elsewhere.append(job)
+            continue
+
         loc = _norm(job.get("location", ""))
         if not loc:
             ambiguous.append(job)            # no location at all -> review
@@ -142,7 +235,31 @@ def filter_by_location(jobs: list, locations_allowed: list) -> dict:
         #     resolve; the displayed location text is left as-is (truthful), and
         #     the role is tagged location_via_site so the UI can note the city was
         #     inferred from the site, mirroring the country-only tag.
+        # Tokens of the role's location. Boards separate parts with more than
+        # just commas — "Remote - United Kingdom", "London / Paris",
+        # "Berlin | Remote", "Yoto HQ - UK". Splitting on comma ALONE glued
+        # "remote - united kingdom" into one token, so the country-only test
+        # (which looks for "united kingdom" as its own token) failed and the role
+        # was wrongly dropped to "elsewhere". Split on commas, en/em/hyphen
+        # dashes, slashes and pipes so each place term stands alone. Computed here
+        # (before the site lookup) so the site match can inspect tokens too.
+        tokens = {p.strip() for p in re.split(r"[,\-\u2013\u2014/|]", loc)
+                  if p.strip()}
+
+        # A known SITE/HQ label resolves to its city — either as the WHOLE
+        # location ("The National Gallery") or as one TOKEN among others when the
+        # board suffixes a country ("Yoto HQ - UK" -> tokens {"yoto hq", "uk"}).
+        # Checking tokens as well as the whole string means a site-plus-country
+        # tag still matches its city instead of falling through to "elsewhere"
+        # (the "yoto hq" token isn't a country word, so the country-only test
+        # below would otherwise drop the whole role). Conservative as before:
+        # only listed sites resolve; displayed text is left truthful.
         site_city = _SITE_CITY.get(loc)
+        if not site_city:
+            for tok in tokens:
+                if tok in _SITE_CITY:
+                    site_city = _SITE_CITY[tok]
+                    break
         if site_city and any(_norm(a) == site_city or site_city in _norm(a)
                              for a in allowed_raw):
             j = dict(job)
@@ -151,18 +268,32 @@ def filter_by_location(jobs: list, locations_allowed: list) -> dict:
             matched.append(j)
             continue
 
-        # Tokens of the role's location (comma-separated parts).
-        tokens = {p.strip() for p in loc.split(",") if p.strip()}
-
         # Is the role tagged only at country/remote level (no specific city)?
         # A role is "country-only" if every one of its location tokens is itself
         # a country/region term — either in the global set OR (crucially) in the
         # country terms for one of our filtered cities. This is what lets a
         # "United Arab Emirates" role count as country-only for a "Dubai" filter
         # even though UAE isn't in the static set.
+        #
+        # First remove work-ARRANGEMENT words ("Hybrid", "Remote", "On-site")
+        # from the location STRING (whole-word), leaving just the place text. A
+        # board writes these with a space ("Hybrid UK", "Remote UK"), so token
+        # splitting alone wouldn't separate them — "hybrid uk" is one token. After
+        # stripping, "hybrid uk" -> "uk" and "remote united kingdom" -> "united
+        # kingdom", which then classify as country-only exactly like a bare
+        # country tag. We must NOT split on spaces generally (that would shatter
+        # "united kingdom" into non-country words), so word-removal is the safe
+        # move. A bare "Remote" strips to "" and still falls through to review.
+        loc_places = loc
+        for w in _ARRANGEMENT_WORDS:
+            loc_places = re.sub(rf"\b{re.escape(w)}\b", " ", loc_places)
+        loc_places = re.sub(r"\s+", " ", loc_places).strip()
+        place_tokens = {p.strip() for p in
+                        re.split(r"[,\-\u2013\u2014/|]", loc_places) if p.strip()}
         country_word_set = _COUNTRY_ONLY | country_terms
-        is_country_only = (bool(tokens) and tokens.issubset(country_word_set)) \
-            or loc in country_word_set
+        is_country_only = (bool(place_tokens)
+                           and place_tokens.issubset(country_word_set)) \
+            or loc_places in country_word_set
 
         # 2) Country fallback: a country-only role whose country/state matches one
         #    of our filtered cities' countries -> pull in, but TAG it.

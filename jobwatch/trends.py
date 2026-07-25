@@ -73,10 +73,38 @@ def _bucket_location(location: str) -> str:
     tidies whitespace, so "London, United Kingdom" and "London,United Kingdom"
     both bucket to "London". Country-only strings like "United Kingdom" bucket
     to themselves. (The app's real location FILTER is separate - Phase C.)
+
+    SITE / BOROUGH canonicalization (shared with the location filter): some boards
+    tag roles by a specific site or London BOROUGH ("Richmond upon Thames",
+    "Shoreditch", "The National Gallery") rather than the city. Left alone, each
+    would form its OWN trend bucket, so a company's London roles would scatter
+    across many tiny lines and a "London" trends filter would miss them. We reuse
+    the SAME map the filter uses (filters._SITE_CITY) to fold those to their city,
+    so boroughs record under "London" - matching what the Jobs view shows. The map
+    is exact-string on full names, so "Richmond upon Thames" -> London while
+    "Richmond, VA" is untouched. Falls back gracefully if filters can't be
+    imported (trends must never break a run).
     """
     loc = (location or "").strip()
     if not loc:
         return "Unknown"
+
+    # Try the shared site/borough map first (whole string, then first part), so a
+    # borough or named site collapses to its canonical city. Import locally and
+    # defensively - trends are non-critical and must never raise.
+    try:
+        from . import filters
+        site_map = getattr(filters, "_SITE_CITY", {})
+        norm = getattr(filters, "_norm", None)
+        if site_map and norm:
+            whole = norm(loc)
+            first_norm = norm(loc.split(",")[0])
+            canon = site_map.get(whole) or site_map.get(first_norm)
+            if canon:
+                return canon.title()      # "london" -> "London" (bucket style)
+    except Exception:
+        pass  # fall through to the plain first-part bucket
+
     first = loc.split(",")[0].strip()
     return first or "Unknown"
 
