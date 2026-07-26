@@ -42,9 +42,60 @@ const api = {
   },
 };
 
+/* =======================================================================
+   JW-04 — screen-reader announcements
+
+   The whole point of this app is telling you what changed. A sighted user sees
+   the list redraw; without this, nobody else learns it happened.
+
+   Writes into the two live regions in index.html. They are persistent, so we
+   only ever set textContent — never rebuild them.
+
+   Two details that look like fussiness and are not:
+   • The clear-then-set on a rAF. Setting the same string twice in a row is a
+     no-op to most screen readers, so re-running a check that finds nothing new
+     would announce "Nothing moved" once and then stay silent forever. Emptying
+     the node first, then writing on the next frame, makes each call a fresh
+     change.
+   • Announcements are SUMMARIES, never lists. The results container is not a
+     live region — see the comment in index.html for why.
+   ======================================================================= */
+function announce(message, assertive = false) {
+  const region = $(assertive ? '#srAlert' : '#srStatus');
+  if (!region || !message) return;
+  region.textContent = '';
+  requestAnimationFrame(() => { region.textContent = message; });
+}
+
+/* A run result -> one sentence. Shared by both run paths (report route and the
+   Jobs two-pane) so they can never drift apart. */
+function runSummary(result) {
+  const c = (result && result.counts) || {};
+  const nw = c.total_new ?? 0, gone = c.total_removed ?? 0;
+  const bits = [`Check complete.`];
+  if (!nw && !gone) bits.push('Nothing moved — no new or removed roles.');
+  else {
+    bits.push(`${nw} new ${nw === 1 ? 'role' : 'roles'}`);
+    bits.push(`${gone} removed.`);
+  }
+  bits.push(`${c.companies_checked ?? 0} companies checked`);
+  if (c.companies_failed) bits.push(`, ${c.companies_failed} unreachable`);
+  if (c.companies_skipped) bits.push(`, ${c.companies_skipped} not yet supported`);
+  const gone_alerts = (result && result.gone_alerts) || [];
+  if (gone_alerts.length) {
+    bits.push(`. Heads up: ${gone_alerts.length} ${gone_alerts.length === 1
+      ? 'role you applied to is' : 'roles you applied to are'} no longer listed`);
+  }
+  return bits.join(' ').replace(/\s+([.,])/g, '$1') + '.';
+}
+
+/* Toasts are already the app's "something just happened" channel, so routing
+   them through the live regions makes every existing one audible for free.
+   Errors go to the assertive region — they're worth interrupting for. */
 function toast(message, isError = false) {
   const t = el('div', { class: 'toast' + (isError ? ' err' : '') }, message);
   document.body.appendChild(t);
+  announce(message, isError);
   setTimeout(() => t.remove(), isError ? 5200 : 2800);
 }
 
@@ -1872,6 +1923,7 @@ async function cancelRun() {
     await api.post('/api/run/cancel', {});
     const note = $('#runNote');
     if (note) note.textContent = 'Stopping after the current company finishes…';
+    announce('Stopping after the current company finishes.');
   } catch (e) { toast(e.message, true); if (btn) { btn.removeAttribute('disabled'); btn.textContent = 'Cancel check'; } }
 }
 
@@ -1898,6 +1950,9 @@ function streamRun() {
         $('#runNote').textContent = ev.note || '';
         $('#barText').textContent = `0 of ${total} checked`;
         $('#barPct').textContent = '0%';
+        // JW-04: start only. Per-company progress is NOT announced — 40
+        // companies would mean 40 interruptions during a run.
+        announce(`Checking ${total} ${total === 1 ? 'company' : 'companies'}.`);
         break;
 
       case 'company_start': {
@@ -1949,6 +2004,7 @@ function streamRun() {
           el('button', { class: 'backlink', onclick: loadHome }, '← Home'),
           errorBox('That check couldn’t run.', ev.message),
         );
+        announce(`That check couldn’t run. ${ev.message || ''}`.trim(), true);
         break;
 
       case 'result':
@@ -1963,7 +2019,12 @@ function streamRun() {
           if (LAST_RESULT) {
             $('#barFill').style.width = '100%';
             $('#barPct').textContent = '100%';
-            setTimeout(() => go('report'), 350);
+            setTimeout(() => {
+              go('report');
+              // Announce AFTER the report is drawn, so a screen reader user
+              // hears the summary with the detail already reachable behind it.
+              announce(runSummary(LAST_RESULT));
+            }, 350);
           } else {
             go('home');
           }
@@ -5609,6 +5670,7 @@ function streamJobsRun() {
         $('#runNote').textContent = ev.note || '';
         $('#barText').textContent = `0 of ${total} checked`;
         $('#barPct').textContent = '0%';
+        announce(`Checking ${total} ${total === 1 ? 'company' : 'companies'}.`);
         break;
       case 'company_start': {
         const li = el('li', {}, [
@@ -5654,12 +5716,14 @@ function streamJobsRun() {
         $('#view').replaceChildren(
           el('button', { class: 'backlink', onclick: () => { RUN_RESULT = null; go('jobs'); } }, '← Jobs'),
           errorBox('That check couldn’t run.', ev.message));
+        announce(`That check couldn’t run. ${ev.message || ''}`.trim(), true);
         break;
       case 'result':
         LAST_RESULT = ev.result; RUN_RESULT = ev.result; break;
       case 'run_cancelled':
         $('#runNote').textContent =
           `Stopped — checked ${ev.checked} of ${ev.total}. Showing what we got.`;
+        announce(`Check stopped. ${ev.checked} of ${ev.total} companies checked. Showing what we got.`);
         break;
       case 'end':
         source.close();
@@ -5672,7 +5736,10 @@ function streamJobsRun() {
           refreshSaved(),
         ]).finally(() => {
           RUN_FOCUS = null; DEPT_VIEW = null; JOBS_TAB = 'check';
-          setTimeout(() => { if (RUN_RESULT) drawJobs(); else go('jobs'); }, 300);
+          setTimeout(() => {
+            if (RUN_RESULT) { drawJobs(); announce(runSummary(RUN_RESULT)); }
+            else go('jobs');
+          }, 300);
         });
         break;
       case 'idle': source.close(); go('jobs'); break;

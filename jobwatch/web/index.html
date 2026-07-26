@@ -24,6 +24,23 @@
     <main id="view"></main>
   </div>
 
+  <!-- JW-04 — screen-reader announcements. These live OUTSIDE .wrap on purpose:
+       every screen is drawn with replaceChildren() on #view, and a live region
+       that gets torn down and rebuilt never announces. They must be present in
+       the DOM, empty, before the text is written into them.
+
+       Two regions, deliberately. #srStatus is polite: run summaries, "nothing
+       moved", toasts. #srAlert is assertive and reserved for failures, which are
+       worth interrupting for. Both are visually hidden, never display:none —
+       display:none is not announced.
+
+       Note what is NOT here: aria-live on the results container itself. The SPA
+       re-renders whole screens in place on every filter chip, sort and drag, so
+       a live results list would read the entire run back on each one. Announce a
+       summary instead. -->
+  <div id="srStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="srAlert"  class="sr-only" role="alert"  aria-live="assertive" aria-atomic="true"></div>
+
   <script src="/app.js"></script>
 </body>
 </html>

@@ -13,17 +13,65 @@
   --paper-2:    #FBF8F2;   /* raised cards */
   --ink:        #211C16;   /* near-black warm ink */
   --ink-soft:   #5C544A;   /* secondary text */
-  --ink-faint:  #938A7C;   /* captions, meta */
+  --ink-faint:  #746C60;   /* captions, meta — JW-02: was #938A7C (3.05:1 on
+                              --paper). Every palette now carries its own value;
+                              63 usages, all below 18pt, so 4.5:1 applies. */
   --rule:       #E3DCCE;   /* hairlines */
   --rule-2:     #D2C8B6;   /* stronger hairlines */
 
+  /* JW-07 — --rule-2 sits at 1.26-1.40:1 against the papers. Fine for a
+     decorative separator, not when it is the ONLY thing defining where a
+     control is: .btn.ghost is transparent and its border is its whole
+     boundary. SC 1.4.11 wants 3:1 for that. Separate token so hairlines stay
+     hairlines and controls get an edge you can actually find. */
+  --control-border: #9D8761;
+
+  /* JW-13/JW-14 — the focus ring, as two bands.
+
+     The ring was --accent, which is a mid-tone amber on mid-tone paper: 2.78:1
+     on cards, below the 3:1 SC 1.4.11 needs. Worse, five rules draw the ring
+     INSIDE the element (outline-offset: -2px), so it lands on that element's
+     own fill — and .appearance-seg button.on is filled with --accent, giving
+     an amber ring on an amber background at 1.00:1. Invisible, in all six
+     palettes.
+
+     The insight: a ring has to contrast with WHAT IS BEHIND IT, and "what is
+     behind it" is not the mode — it is whatever that particular element is
+     filled with, which can invert locally. No single colour can know that.
+
+     So the ring carries both: a dark band and a light band, adjacent. Whatever
+     the ground turns out to be, one of them shows. And because these point at
+     --ink and --paper, which every palette already themes, they invert per
+     mode for free — no new per-palette values, and a new theme gets a correct
+     ring without anyone remembering to think about it.
+
+     Want the amber ring back? Point --focus-ring at var(--accent). The halo
+     keeps doing the safety work; the change is this one line. */
+  --focus-ring: var(--ink);
+  --focus-halo: var(--paper);
+
   --signal:     #C8780C;   /* amber-gold: NEW / look here */
   --signal-bg:  #FBEFD9;   /* amber wash behind new things */
+  /* JW-12 — the fourth token with the JW-01 disease, missed by the audit.
+     --slate is drawn as text at .job .j-company on every row of the main job
+     list, where it measured 1.73-2.15:1 in the three dark modes. Same
+     treatment as the other semantic flags — light values here, dark override
+     below — and the wash moves with it, because .tag.unclear,
+     .cl-status.pending and .detect-msg.warn all draw slate type on it. */
   --slate:      #3E4A52;   /* ambient / casual cool */
   --slate-bg:   #E8ECEE;
-  --removed:    #9A8C7B;   /* removed roles: faded, not alarming — FIXED, never themed */
-  --stretch:    #B6741A;   /* experience stretch flag — FIXED, never themed */
-  --ok:         #4E6B4A;   /* gentle confirmation green — FIXED, never themed */
+  /* Semantic flags. Their MEANING is fixed — removed is always the faded one,
+     stretch always the amber caution, ok always the green. Their VALUE is not:
+     no single colour clears 4.5:1 against both #F8F2E8 and #0C0C0C, so each
+     gets a [data-mode="dark"] override below (JW-01). The light values live
+     here; do not read "semantically fixed" as "one literal forever".
+     --stretch and --ok are only ever drawn as text on their OWN pill grounds,
+     so those grounds are tokenised too and move with them. */
+  --removed:    #6B6052;   /* removed roles: faded, not alarming */
+  --stretch:    #875610;   /* experience stretch flag */
+  --stretch-bg: #F3E3C9;   /* the .tag.stretch pill ground */
+  --ok:         #4E6B4A;   /* gentle confirmation green */
+  --ok-bg:      #E4EBE2;   /* the .cl-status.ok pill ground */
 
   /* Phase H — the single themeable accent. Everything that should take the
      current phase's colour ("new / look here / the lead") reads --accent, not
@@ -33,7 +81,22 @@
      flags above (removed/stretch/ok) deliberately do NOT follow the theme. */
   --accent:     var(--signal);
   --accent-bg:  var(--signal-bg);
-  --on-accent:  #FBF7EF;   /* text on the accent; per-theme overrides ensure >=4.5:1 */
+
+  /* JW-03 — --accent does two jobs at two thresholds. As a ring, fill or
+     border it needs 3:1 and passes everywhere; as TYPE it needs 4.5:1 and
+     failed in every light mode, which meant every link. The token is split:
+     --accent keeps rings/fills/borders and is unchanged, --accent-text is the
+     one anything drawn as type reads. It clears 4.5:1 on --paper, --paper-2
+     AND --accent-bg, because accent-on-accent-bg (the pills and chips) was the
+     pairing nobody measured — it sat at 3.00 in active/light. In dark modes it
+     is identical to --accent, which already passed. */
+  --accent-text: #9C5D09;
+
+  /* JW-06 — was #FBF7EF, which is 3.20:1 on the baseline --accent. The six
+     themed palettes each override this and each passed; the baseline they all
+     inherit from did not, so it failed in the window before data-theme lands
+     or if the JS never sets it. Now matches the active-light override. */
+  --on-accent:  #16130D;   /* text on the accent; 5.43:1 on baseline --accent */
 
   /* Destructive actions (remove company / delete bucket). Kept red across all
      themes so "delete" always reads as caution, but tokenised so the exact
@@ -61,43 +124,55 @@
 /* ---- ACTIVE — cool, focused ------------------------------------------- */
 :root[data-theme="active"] {
   --paper: #F8F2E8; --paper-2: #F0E7D6;
-  --ink: #211E18; --ink-soft: #4F4A40; --ink-faint: #857F73;
+  --ink: #211E18; --ink-soft: #4F4A40; --ink-faint: #6B665D;   /* JW-02: was #857F73 */
   --rule: #EAE0CE; --rule-2: #E0D6C4;
   --accent: #C8780C; --accent-bg: #FBEFD9; --on-accent: #16130D;
+  --accent-text: #955909;   /* JW-03 */
+  --control-border: #997F50;   /* JW-07 */
 }
 :root[data-theme="active"][data-mode="dark"] {
   --paper: #141009; --paper-2: #1F170D;
-  --ink: #F5EBDA; --ink-soft: #CBB897; --ink-faint: #9C8463;
+  --ink: #F5EBDA; --ink-soft: #CBB897; --ink-faint: #9C8463;   /* JW-02: already passes */
   --rule: #2A2013; --rule-2: #322617;
   --accent: #EFBA74; --accent-bg: #2A2013; --on-accent: #16130D;
+  --accent-text: #EFBA74;   /* JW-03: dark accent already clears 4.5:1 as type */
+  --control-border: #80613B;   /* JW-07 */
 }
 
 /* ---- CASUAL — warm, calm ---------------------------------------------- */
 :root[data-theme="casual"] {
   --paper: #EEF1F3; --paper-2: #E1E7EB;
-  --ink: #14191C; --ink-soft: #3C474D; --ink-faint: #6E7C84;
+  --ink: #14191C; --ink-soft: #3C474D; --ink-faint: #586369;   /* JW-02: was #6E7C84 */
   --rule: #DBE2E6; --rule-2: #CFD8DD;
   --accent: #2F6F8F; --accent-bg: #DCE8EE; --on-accent: #FBF7EF;
+  --accent-text: #2E6C8B;   /* JW-03 */
+  --control-border: #698594;   /* JW-07 */
 }
 :root[data-theme="casual"][data-mode="dark"] {
   --paper: #141A1E; --paper-2: #1C242A;
-  --ink: #EAF1F4; --ink-soft: #AFC0C8; --ink-faint: #728690;
+  --ink: #EAF1F4; --ink-soft: #AFC0C8; --ink-faint: #7B8E97;   /* JW-02: was #728690 */
   --rule: #222E34; --rule-2: #2A353B;
   --accent: #5FA8C4; --accent-bg: #1B2A31; --on-accent: #16130D;
+  --accent-text: #5FA8C4;   /* JW-03: dark accent already clears 4.5:1 as type */
+  --control-border: #5A727F;   /* JW-07 */
 }
 
 /* ---- DORMANT — neutral, resting --------------------------------------- */
 :root[data-theme="dormant"] {
   --paper: #EFEFEF; --paper-2: #E4E4E4;
-  --ink: #1A1A1A; --ink-soft: #555555; --ink-faint: #8A8A8A;
+  --ink: #1A1A1A; --ink-soft: #555555; --ink-faint: #646464;   /* JW-02: was #8A8A8A */
   --rule: #DDDDDD; --rule-2: #D6D6D6;
   --accent: #6E6E6E; --accent-bg: #DCDCDC; --on-accent: #FBF7EF;
+  --accent-text: #5F5F5F;   /* JW-03 */
+  --control-border: #808080;   /* JW-07 */
 }
 :root[data-theme="dormant"][data-mode="dark"] {
   --paper: #0C0C0C; --paper-2: #161616;
-  --ink: #F2F2F2; --ink-soft: #B4B4B4; --ink-faint: #777777;
+  --ink: #F2F2F2; --ink-soft: #B4B4B4; --ink-faint: #818181;   /* JW-02: was #777777 */
   --rule: #1F1F1F; --rule-2: #262626;
   --accent: #9A9A9A; --accent-bg: #1F1F1F; --on-accent: #16130D;
+  --accent-text: #9A9A9A;   /* JW-03: dark accent already clears 4.5:1 as type */
+  --control-border: #656565;   /* JW-07 */
 }
 
 /* ---- the gentle transition on a switch or a light/dark flip (H.4) ------
@@ -135,6 +210,21 @@ html, body {
   --danger:        #E8836F;
   --danger-border: #6E382E;
   --danger-bg:     #2E1A16;
+
+  /* JW-01 — the semantic flags, lifted for dark grounds. Meaning unchanged;
+     only the value moves. --removed is drawn as text directly on --paper /
+     --paper-2, so it needs the lift most. --stretch and --ok are only drawn as
+     text on their own pill grounds, so those grounds move with them rather
+     than staying as light literals under a dark theme (which is what made the
+     naive "just add a dark override" version REGRESS .cl-status.ok from
+     4.90:1 to 2.85:1). */
+  --removed:    #9A8C7B;
+  --stretch:    #BF7A1B;
+  --stretch-bg: #2A1F0C;
+  --ok:         #6C9466;
+  --ok-bg:      #182317;
+  --slate:      #7D919E;   /* JW-12 */
+  --slate-bg:   #1B242A;   /* JW-12 */
 }
 
 body { padding: 0 0 96px; }
@@ -146,7 +236,7 @@ body { padding: 0 0 96px; }
 .wrap { max-width: var(--maxw); margin: 0 auto; padding-top: 28px; padding-left: 32px; padding-right: 32px; }
 body.on-home .wrap { padding-top: 0; }
 
-a { color: var(--accent); text-decoration: none; }
+a { color: var(--accent-text); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* ---- phase-state banner (the signature "current reading") -------------- */
@@ -193,7 +283,7 @@ a:hover { text-decoration: underline; }
   margin: 0;
 }
 .reading .phase-note { color: var(--ink-soft); font-size: 14.5px; margin: 0; }
-.reading .phase-note.nudge { color: var(--accent); font-weight: 500; }
+.reading .phase-note.nudge { color: var(--accent-text); font-weight: 500; }
 .reading .phase-meta {
   display: flex; flex-wrap: wrap; gap: 6px 22px;
   font-family: 'IBM Plex Mono', monospace;
@@ -238,14 +328,14 @@ a:hover { text-decoration: underline; }
 }
 .bucket:hover { border-color: var(--accent); box-shadow: var(--shadow); }
 .bucket:active { transform: translateY(1px); }
-.bucket:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.bucket:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 .bucket .b-name { font-weight: 600; font-size: 16px; }
 .bucket .b-meta {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 12px; color: var(--ink-faint); margin-top: 6px;
 }
 .bucket .b-go {
-  margin-top: 12px; font-size: 13px; font-weight: 500; color: var(--accent);
+  margin-top: 12px; font-size: 13px; font-weight: 500; color: var(--accent-text);
 }
 
 /* ---- buttons ----------------------------------------------------------- */
@@ -257,8 +347,8 @@ a:hover { text-decoration: underline; }
 }
 .btn:hover { opacity: .9; }
 .btn:active { transform: translateY(1px); }
-.btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
-.btn.ghost { background: transparent; color: var(--ink); border-color: var(--rule-2); }
+.btn:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
+.btn.ghost { background: transparent; color: var(--ink); border-color: var(--control-border); }
 .btn.ghost:hover { border-color: var(--ink); opacity: 1; }
 .btn.signal { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.danger { background: transparent; color: var(--danger); border-color: var(--danger-border); }
@@ -303,7 +393,7 @@ a:hover { text-decoration: underline; }
 .run-list li:last-child { border-bottom: none; }
 .tick { width: 16px; flex: none; font-family: 'IBM Plex Mono', monospace; }
 .tick.pending { color: var(--ink-faint); }
-.tick.doing   { color: var(--accent); }
+.tick.doing   { color: var(--accent-text); }
 .tick.done    { color: var(--ok); }
 .tick.failed  { color: var(--danger); }
 .tick.skipped { color: var(--ink-faint); }
@@ -312,7 +402,7 @@ a:hover { text-decoration: underline; }
   font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;
   color: var(--ink-faint);
 }
-.run-list .r-delta .new { color: var(--accent); font-weight: 500; }
+.run-list .r-delta .new { color: var(--accent-text); font-weight: 500; }
 
 /* ---- report ------------------------------------------------------------ */
 .report-head {
@@ -322,7 +412,7 @@ a:hover { text-decoration: underline; }
 .tally {
   font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--ink-soft);
 }
-.tally b { color: var(--accent); }
+.tally b { color: var(--accent-text); }
 
 .toggle {
   display: inline-flex; border: 1.5px solid var(--rule-2); border-radius: 8px;
@@ -334,7 +424,7 @@ a:hover { text-decoration: underline; }
   cursor: pointer;
 }
 .toggle button.on { background: var(--ink); color: var(--paper); }
-.toggle button:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+.toggle button:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: -2px; box-shadow: inset 0 0 0 2px var(--focus-halo); }
 
 .company-block { margin-bottom: 26px; }
 .company-block > h3 {
@@ -372,8 +462,8 @@ a:hover { text-decoration: underline; }
   padding: 2px 7px; border-radius: 999px; letter-spacing: .03em;
   white-space: nowrap;
 }
-.tag.new      { background: var(--accent-bg); color: var(--accent); }
-.tag.interest { background: var(--accent-bg); color: var(--accent); }
+.tag.new      { background: var(--accent-bg); color: var(--accent-text); }
+.tag.interest { background: var(--accent-bg); color: var(--accent-text); }
 .tag.unclear  { background: var(--slate-bg); color: var(--slate); }
 .tag.stretch  { background: #F3E3C9; color: var(--stretch); }
 
@@ -475,7 +565,14 @@ input[type=text], input:not([type]), textarea {
 }
 input[type=text]::placeholder, textarea::placeholder { color: var(--ink-faint); opacity: 1; }
 input[type=text]:focus, input:not([type]):focus, textarea:focus {
-  outline: none; border-color: var(--accent);
+  border-color: var(--accent);
+}
+/* JW-05 — the border-colour change alone is a weak indicator and does not meet
+   2.4.13 Focus Appearance. The ring is the same pattern used by the other 27
+   focus-visible rules in this file. */
+input[type=text]:focus-visible, input:not([type]):focus-visible, textarea:focus-visible {
+  outline: 2.5px solid var(--focus-ring); outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--focus-halo);
 }
 .field input[type=text] { width: 100%; }
 .seg { display: inline-flex; gap: 8px; }
@@ -504,6 +601,20 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
 
 /* ---- misc -------------------------------------------------------------- */
 .hidden { display: none !important; }
+
+/* JW-04 — visually hidden but still in the accessibility tree. Deliberately not
+   display:none or visibility:hidden: both remove the node from the tree, and a
+   live region that isn't in the tree announces nothing. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 .muted { color: var(--ink-faint); }
 .loading {
   font-family: 'IBM Plex Mono', monospace; color: var(--ink-faint);
@@ -514,7 +625,7 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
   display: inline-flex; align-items: center; gap: 6px; margin-bottom: 6px;
   background: none; border: none; font-family: inherit; padding: 4px 0;
 }
-.backlink:hover { color: var(--accent); }
+.backlink:hover { color: var(--accent-text); }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
@@ -548,7 +659,7 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
 }
 .rank-num {
   font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500;
-  color: var(--accent); flex: none; width: 26px;
+  color: var(--accent-text); flex: none; width: 26px;
 }
 .rank-text { flex: 1; font-weight: 500; font-size: 14.5px; }
 .rank-actions { display: flex; gap: 4px; flex: none; }
@@ -572,7 +683,7 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
   border: 1.5px solid var(--rule-2); border-radius: 8px;
   padding: 7px 10px; cursor: pointer;
 }
-.trend-select:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.trend-select:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 
 /* the chart card */
 .trend-chart-wrap {
@@ -622,7 +733,7 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
   stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 4; opacity: .55;
 }
 .trend-switch-label {
-  font-family: 'IBM Plex Mono', monospace; font-size: 9px; fill: var(--accent);
+  font-family: 'IBM Plex Mono', monospace; font-size: 9px; fill: var(--accent-text);
   opacity: .85;
 }
 .trend-dot { stroke: var(--paper-2); stroke-width: 1.5; transition: opacity .15s; }
@@ -691,7 +802,7 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
   padding: 8px 12px; cursor: pointer; transition: border-color .12s;
 }
 .trend-dd-btn:hover { border-color: var(--ink); }
-.trend-dd-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.trend-dd-btn:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 .trend-dd.open .trend-dd-btn { border-color: var(--accent); }
 .trend-dd-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trend-dd-caret { color: var(--ink-faint); font-size: 11px; flex: none; }
@@ -708,14 +819,15 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
   width: 100%; box-sizing: border-box;
   font-family: 'Inter', sans-serif; font-size: 13.5px; color: var(--ink);
   background: var(--paper); border: 1.5px solid var(--rule-2); border-radius: 8px;
-  padding: 8px 10px; outline: none;
+  padding: 8px 10px;
 }
 .trend-dd-search:focus { border-color: var(--accent); }
+.trend-dd-search:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }   /* JW-05 */
 .trend-dd-quick {
   display: flex; align-items: center; gap: 8px; padding: 0 12px 6px;
 }
 .trend-dd-quickbtn {
-  font-family: 'Inter', sans-serif; font-size: 12px; color: var(--accent);
+  font-family: 'Inter', sans-serif; font-size: 12px; color: var(--accent-text);
   background: none; border: none; cursor: pointer; padding: 2px 0;
 }
 .trend-dd-quickbtn:hover { text-decoration: underline; }
@@ -759,7 +871,7 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
   padding: 6px 16px; cursor: pointer;
 }
 .trend-dd-apply:hover { opacity: .92; }
-.trend-dd-apply:focus-visible { outline: 2.5px solid var(--ink); outline-offset: 2px; }
+.trend-dd-apply:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 
 /* ---- under-chart controls: split (single company) + breakdown toggle ---- */
 .trend-under {
@@ -774,7 +886,7 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
 }
 .trend-breakdown-btn:hover { border-color: var(--ink); }
 .trend-breakdown-btn.on { background: var(--accent-bg); border-color: var(--accent); color: var(--ink); }
-.trend-breakdown-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.trend-breakdown-btn:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 
 /* ---- the breakdown legend (hover to isolate a line) ---- */
 .trend-legend {
@@ -819,13 +931,19 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
   padding: 2px 4px;
 }
 .trend-loc-input {
-  border: none; background: none; outline: none;
+  border: none; background: none;
   font-family: 'Inter', sans-serif; font-size: 12.5px; color: var(--ink);
   min-width: 80px; flex: 1; padding: 2px;
 }
+/* JW-05 — this one had NO replacement: focus was invisible. It sits inside a
+   chip row, so the ring is inset to avoid clipping against the container. */
+.trend-loc-input:focus-visible {
+  outline: 2.5px solid var(--focus-ring); outline-offset: -1px; border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--focus-halo);
+}
 .trend-loc-reset {
   align-self: flex-start; margin-top: 5px;
-  font-family: 'Inter', sans-serif; font-size: 11.5px; color: var(--accent);
+  font-family: 'Inter', sans-serif; font-size: 11.5px; color: var(--accent-text);
   background: none; border: none; cursor: pointer; padding: 0;
 }
 .trend-loc-reset:hover { text-decoration: underline; }
@@ -907,7 +1025,7 @@ input[type=text]:focus, input:not([type]):focus, textarea:focus {
   z-index: 39; cursor: pointer;
 }
 #bannerEdge:focus-visible {
-  outline: 2.5px solid var(--accent); outline-offset: -2px;
+  outline: 2.5px solid var(--focus-ring); outline-offset: -2px; box-shadow: inset 0 0 0 2px var(--focus-halo);
 }
 /* A faint persistent handle so a touch/trackpad user sees there's something to
    pull down — hover is never the ONLY way in (G.1). */
@@ -963,7 +1081,7 @@ body.on-home #bannerEdge:focus::after { opacity: 1; background: var(--ink-faint)
 }
 .banner-link:hover { background: var(--paper); color: var(--ink); }
 .banner-link.on { color: var(--ink); background: var(--paper); font-weight: 600; }
-.banner-link:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.banner-link:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 
 .banner-icon {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
@@ -973,7 +1091,7 @@ body.on-home #bannerEdge:focus::after { opacity: 1; background: var(--ink-faint)
 }
 .banner-icon:hover { color: var(--ink); background: var(--paper); }
 .banner-icon.on { color: var(--ink); border-color: var(--rule-2); background: var(--paper); }
-.banner-icon:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.banner-icon:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 .banner-icon .glyph { width: 19px; height: 19px; }
 
 /* ---- the phase switcher: a dropdown at top-left ------------------------ */
@@ -988,7 +1106,7 @@ body.on-home #bannerEdge:focus::after { opacity: 1; background: var(--ink-faint)
   transition: border-color .14s, background .14s;
 }
 .switch-trigger:hover { border-color: var(--ink-faint); }
-.switch-trigger:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.switch-trigger:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 .switch-trigger .glyph { width: 16px; height: 16px; flex: none; }
 .switch-trigger .switch-label { line-height: 1; }
 .switch-trigger .caret-glyph {
@@ -1036,7 +1154,7 @@ body.on-home #bannerEdge:focus::after { opacity: 1; background: var(--ink-faint)
 .switch-item .glyph { width: 16px; height: 16px; flex: none; }
 .switch-item .switch-label { flex: 1; line-height: 1; }
 .switch-item:hover { background: var(--paper); color: var(--ink); }
-.switch-item:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+.switch-item:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: -2px; box-shadow: inset 0 0 0 2px var(--focus-halo); }
 .switch-item.is-active  .glyph { color: var(--accent); }
 .switch-item.is-casual  .glyph { color: var(--slate); }
 .switch-item.is-dormant .glyph { color: var(--ink-faint); }
@@ -1102,7 +1220,7 @@ body.on-home #bannerEdge:focus::after { opacity: 1; background: var(--ink-faint)
 .appearance-seg button:last-child { border-right: none; }
 .appearance-seg button:hover { background: var(--paper); color: var(--ink); }
 .appearance-seg button.on { background: var(--accent); color: var(--on-accent); }
-.appearance-seg button:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+.appearance-seg button:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: -2px; box-shadow: inset 0 0 0 2px var(--focus-halo); }
 .appearance-seg .glyph { width: 15px; height: 15px; }
 
 /* ===========================================================================
@@ -1170,7 +1288,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 .icon-btn:hover { background: var(--paper); border-color: var(--rule-2); color: var(--ink); }
 .icon-btn.danger:hover { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
 .icon-btn .glyph { width: 15px; height: 15px; }
-.icon-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 1px; }
+.icon-btn:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 1px; box-shadow: 0 0 0 1px var(--focus-halo); }
 
 /* right column — company ordering */
 .mc-order { display: inline-flex; align-items: center; gap: 6px; }
@@ -1182,16 +1300,16 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 }
 .mc-order-btn:hover { border-color: var(--ink-faint); }
 .mc-order-btn.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-.mc-order-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.mc-order-btn:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 
 .mc-clear {
   background: transparent; border: none; cursor: pointer; font: inherit;
-  color: var(--accent); font-size: 13px; padding: 0 0 12px;
+  color: var(--accent-text); font-size: 13px; padding: 0 0 12px;
 }
 .mc-clear:hover { text-decoration: underline; }
 
 /* a bucket tag on a company row (reuses .tag sizing, themed colour) */
-.tag.bucket { background: var(--accent-bg); color: var(--accent); }
+.tag.bucket { background: var(--accent-bg); color: var(--accent-text); }
 
 .empty.small { padding: 28px 0; }
 .empty.small p { margin: 0; }
@@ -1223,7 +1341,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 .help-block ul { margin: 0; padding-left: 20px; color: var(--ink-soft); font-size: 14px; line-height: 1.65; }
 .help-block li { margin-bottom: 6px; }
 .help-url { font-size: 13px; margin: 4px 0 0; word-break: break-all; }
-.help-url a { color: var(--accent); }
+.help-url a { color: var(--accent-text); }
 
 /* ---- sub-bucket mode -------------------------------------------------- */
 .sub-grid {
@@ -1308,7 +1426,8 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 }
 .history-row-main:hover { background: var(--paper-2); }
 .history-row-main:focus-visible {
-  outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px;
+  outline: 2px solid var(--focus-ring); outline-offset: -2px; border-radius: 6px;
+  box-shadow: inset 0 0 0 2px var(--focus-halo);
 }
 .history-trash { align-self: center; flex: none; }
 /* Inline confirm strip shown on a row when its trash is tapped. */
@@ -1353,10 +1472,10 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 }
 .jobs-tab:hover { color: var(--ink-soft); }
 .jobs-tab.on { color: var(--ink); border-bottom-color: var(--accent); }
-.jobs-tab:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.jobs-tab:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); border-radius: 4px; }
 .tab-badge {
   font-family: 'IBM Plex Mono', monospace; font-size: 11px;
-  background: var(--accent-bg); color: var(--accent);
+  background: var(--accent-bg); color: var(--accent-text);
   padding: 1px 7px; border-radius: 999px; line-height: 1.5;
 }
 
@@ -1395,7 +1514,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 .pick-runbar-info { font-size: 14px; color: var(--ink-soft); }
 .pick-count {
   font-family: 'IBM Plex Mono', monospace; font-weight: 600;
-  color: var(--accent); font-size: 16px;
+  color: var(--accent-text); font-size: 16px;
 }
 .btn.is-disabled { opacity: .4; cursor: not-allowed; pointer-events: none; }
 
@@ -1407,12 +1526,12 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   border: 1px solid var(--rule); border-radius: var(--radius);
 }
 .pick-bucket:hover { border-color: var(--accent); }
-.pick-bucket:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.pick-bucket:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 .pick-bucket .pb-name { font-weight: 600; font-size: 16px; flex: 1; }
 .pick-bucket .pb-meta {
   font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-faint);
 }
-.pick-bucket .pb-go { color: var(--accent); font-size: 18px; }
+.pick-bucket .pb-go { color: var(--accent-text); font-size: 18px; }
 
 .pick-detail { display: grid; gap: 18px; }
 .pick-bucket-head {
@@ -1441,7 +1560,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 .pick-company:last-child { border-bottom: none; }
 .pick-company:hover { background: var(--accent-bg); }
 .pick-company.is-on { background: var(--accent-bg); }
-.pick-company:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+.pick-company:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: -2px; box-shadow: inset 0 0 0 2px var(--focus-halo); }
 .pick-company .pc-name { flex: 1; font-size: 15px; }
 .pick-company.is-unrunnable { cursor: default; opacity: .55; }
 .pick-company.is-unrunnable:hover { background: none; }
@@ -1469,8 +1588,8 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   border: 1px solid var(--rule-2); border-radius: 999px;
 }
 .select-all:hover { border-color: var(--ink-faint); color: var(--ink); }
-.select-all.is-on { color: var(--accent); border-color: var(--accent); }
-.select-all:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.select-all.is-on { color: var(--accent-text); border-color: var(--accent); }
+.select-all:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 
 /* ---- the two-pane results --------------------------------------------- */
 .run-twopane { display: grid; grid-template-columns: minmax(220px, 25%) 1fr; gap: 24px; align-items: start; }
@@ -1484,7 +1603,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 }
 .rail-item:hover { background: var(--paper-2); }
 .rail-item.on { background: var(--accent-bg); border-left-color: var(--accent); }
-.rail-item:focus-visible { outline: 2.5px solid var(--accent); outline-offset: -2px; }
+.rail-item:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: -2px; box-shadow: inset 0 0 0 2px var(--focus-halo); }
 .rail-item.is-quiet { cursor: default; opacity: .55; }
 .rail-item.is-quiet:hover { background: none; }
 .rail-item .rail-name { font-weight: 500; font-size: 14px; }
@@ -1512,7 +1631,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 }
 .star:hover { color: var(--accent); }
 .star.is-on { color: var(--accent); }
-.star:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 1px; }
+.star:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 1px; box-shadow: 0 0 0 1px var(--focus-halo); }
 .star-glyph { width: 18px; height: 18px; }
 
 /* ---- the Saved tab ---------------------------------------------------- */
@@ -1533,7 +1652,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 }
 .seg-btn:hover { border-color: var(--ink-faint); color: var(--ink); }
 .seg-btn.on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
-.seg-btn:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.seg-btn:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 
 .saved-row { align-items: center; }
 .saved-actions { flex: none; display: flex; gap: 8px; align-items: center; }
@@ -1598,7 +1717,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   padding: 0.4rem 0.7rem; font: inherit; font-size: 0.9rem; cursor: pointer;
   line-height: 1;
 }
-.tf-drop.on { border-color: var(--accent); color: var(--accent); }
+.tf-drop.on { border-color: var(--accent); color: var(--accent-text); }
 .tf-drop .tf-caret { font-size: 0.7rem; opacity: 0.65; }
 
 /* the checkbox panel */
@@ -1623,7 +1742,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   padding: 0.4rem 0.7rem; font: inherit; font-size: 0.9rem; cursor: pointer;
   line-height: 1;
 }
-.tf-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tf-select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; box-shadow: 0 0 0 1px var(--focus-halo); }
 .tf-dir {
   width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--rule-2);
   background: var(--paper-2); color: var(--ink); font-size: 1rem; cursor: pointer;
@@ -1661,7 +1780,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 .tr-title { flex-direction: column; align-items: flex-start; gap: 0.2rem;
   justify-content: center; word-break: break-word; }
 .tr-title-text { line-height: 1.3; }
-.tr-title a { color: var(--accent); text-decoration: none; }
+.tr-title a { color: var(--accent-text); text-decoration: none; }
 .tr-title a:hover { text-decoration: underline; }
 .tr-date { font-variant-numeric: tabular-nums; color: var(--ink-soft); }
 .tr-actions { justify-content: flex-end; }
@@ -1775,9 +1894,11 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   min-height: 240px; max-height: 50vh; overflow: auto;
   border: 1px solid var(--rule-2); border-radius: 10px;
   padding: 0.7rem 0.85rem; background: var(--paper); color: var(--ink);
-  font-size: 0.95rem; line-height: 1.5; outline: none;
+  font-size: 0.95rem; line-height: 1.5;
 }
-.notes-editor:focus-visible { border-color: var(--accent); }
+/* JW-05 — contenteditable, so the caret is the only other cue and it is easy
+   to lose in a 240px block. */
+.notes-editor:focus-visible { border-color: var(--accent); outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 .notes-editor ul, .notes-editor ol { margin: 0.3rem 0 0.3rem 1.3rem; }
 .notes-editor p { margin: 0 0 0.5rem; }
 
@@ -1788,7 +1909,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 }
 .gone-head { font-weight: 600; color: var(--ink); margin-bottom: 0.3rem; }
 .gone-list { margin: 0.2rem 0 0.4rem; padding-left: 1.1rem; }
-.gone-list a { color: var(--accent); text-decoration: none; }
+.gone-list a { color: var(--accent-text); text-decoration: none; }
 .gone-list a:hover { text-decoration: underline; }
 .gone-foot { font-size: 0.84rem; }
 
@@ -1835,7 +1956,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 .filter-toggle .ft-summary { color: var(--ink-soft); font-size: 0.9rem; flex: 1; }
 .filter-toggle .ft-tweaked {
   font-size: 0.78rem;
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-bg);
   padding: 2px 8px;
   border-radius: 999px;
@@ -1864,7 +1985,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   padding: 3px 6px 3px 10px;
   border-radius: 999px;
   background: var(--accent-bg);
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 0.85rem;
 }
 .filter-panel .chip-x {
@@ -1894,7 +2015,8 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   font: inherit;
   font-size: 0.9rem;
 }
-.filter-input:focus { outline: none; border-color: var(--accent); }
+.filter-input:focus { border-color: var(--accent); }
+.filter-input:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }   /* JW-05 */
 
 /* keyword rank/filter toggle */
 .kw-mode {
@@ -1918,7 +2040,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   font: inherit;
   font-size: 0.85rem;
 }
-.mode-opt.is-on { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.mode-opt.is-on { border-color: var(--accent); color: var(--accent-text); background: var(--accent-bg); }
 .mode-dot {
   width: 10px; height: 10px;
   border-radius: 50%;
@@ -1970,14 +2092,18 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   font: inherit;
   font-size: 0.85rem;
 }
-.dept-chip:hover { border-color: var(--accent); color: var(--accent); }
+.dept-chip:hover { border-color: var(--accent); color: var(--accent-text); }
 /* Active chip = the department the view is currently narrowed to. */
+/* Text on an --accent fill must read --on-accent, not --paper. --paper gave
+   3.06:1 in base, 3.07 in active/light and 4.43 in dormant/light — the exact
+   failure --on-accent exists to prevent. Not in the audit; found while doing
+   JW-03. */
 .dept-chip.on {
   border-color: var(--accent);
   background: var(--accent);
-  color: var(--paper);
+  color: var(--on-accent);
 }
-.dept-chip.on:hover { color: var(--paper); }
+.dept-chip.on:hover { color: var(--on-accent); }
 .dept-chip .dc-count {
   display: inline-flex;
   align-items: center;
@@ -1986,14 +2112,14 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   padding: 0 5px;
   border-radius: 999px;
   background: var(--accent-bg);
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 0.78rem;
   font-weight: 600;
 }
 /* When the chip is active, invert the count badge so it reads on the accent fill. */
 .dept-chip.on .dc-count {
   background: var(--paper);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* "Showing <dept> · clear" indicator above the narrowed list (this session). */
@@ -2009,7 +2135,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 .dept-view-note .dvn-clear {
   border: 1.5px solid var(--rule-2);
   background: var(--paper);
-  color: var(--accent);
+  color: var(--accent-text);
   border-radius: 999px;
   padding: 2px 12px;
   cursor: pointer;
@@ -2054,7 +2180,7 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   margin-bottom: 6px;
   display: flex; justify-content: space-between; align-items: baseline;
 }
-.bar-caption .co-stage { color: var(--accent); }
+.bar-caption .co-stage { color: var(--accent-text); }
 .bar-fill.co {
   background: var(--accent);
   opacity: 0.75;
@@ -2074,13 +2200,13 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
   border: 1px solid var(--rule); border-radius: 8px;
   background: var(--paper); color: var(--ink);
 }
-.trend-date:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.trend-date:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 .trend-reset {
   background: none; border: 0; padding: 4px 2px; font: inherit; font-size: 13px;
   color: var(--ink-soft); text-decoration: underline; cursor: pointer;
 }
 .trend-reset:hover { color: var(--ink); }
-.trend-reset:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+.trend-reset:focus-visible { outline: 2.5px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 2px var(--focus-halo); }
 
 /* The chart now sizes to its container (width:100% on the svg), so the wrap
    must not impose a scroll width or the fill is undone. */
