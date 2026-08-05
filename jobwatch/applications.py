@@ -26,34 +26,55 @@ The locked Application shape (DATA_FORMATS.md §6c, Session 21):
         "url":                 "https://.../jobs/4673971005",
         "phase_id":            "phase-2026-04-active", # the phase it was created in
         "applied_on":          "2026-06-21",          # date row created (AUTO)
-        "status":              "applied",             # one of the 7 (see below)
+        "status":              "applied",             # one of the 8 (see below)
         "screening_interview": false,                 # the Yes/No column
         "interview_rounds":    0,                     # editable count
         "notes":               "",                    # the user's OWN thinking
         "last_progress_at":    "2026-06-21"           # date of last FORWARD signal
     }
 
-THE 7 STATUSES (grouped):
+THE 8 STATUSES (grouped):
     To-do      : applied                              (default on add)
     In progress: screening, interview
-    Complete   : ghosted, offer, rejected, withdrawn
+    Complete   : ghosted, offer, rejected_before_interview,
+                 rejected_after_interview, withdrawn
+                 (+ LEGACY bare "rejected", still valid, never offered)
 
     LIVE    = applied / screening / interview   (can still progress, can auto-ghost)
-    TERMINAL= ghosted / offer / rejected / withdrawn  (lifecycle ended)
+    TERMINAL= everything else                   (lifecycle ended)
 
 THE ONE-WAY LADDER (locked): applied -> screening -> interview, forward only.
-No backward or sideways live moves. The four terminal statuses can be set
-directly from any live status. update_status() enforces this; an illegal move
-raises ApplicationError with a plain message.
+No backward or sideways live moves. The terminal statuses can be set directly
+from any live status. update_status() enforces this; an illegal move raises
+ApplicationError with a plain message.
 
 THE AUTO-GHOST RULE (locked): a row that is still LIVE and whose last forward
-signal was >= 14 full days ago auto-flips to "ghosted". last_progress_at starts
-at applied_on and is bumped ONLY by a forward signal — a forward status move OR
-the screening-interview toggle going No->Yes. Editing notes / rounds never
-bumps it. Evaluated LAZILY ON READ (the app has no background timer): every read
-runs apply_auto_ghost and persists any flips, so the change is durable. A row
-"becomes" ghosted on the next read after day 14, not at the precise midnight it
-crosses — identical in practice, but the flip is dated to the read.
+signal was >= the auto-ghost threshold ago auto-flips to "ghosted".
+last_progress_at starts at applied_on and is bumped ONLY by a forward signal — a
+forward status move OR the screening-interview toggle going No->Yes. Editing
+notes / rounds never bumps it. Evaluated LAZILY ON READ (the app has no
+background timer): every read runs apply_auto_ghost and persists any flips, so
+the change is durable. A row "becomes" ghosted on the next read after it crosses
+the threshold, not at the precise midnight — identical in practice, but the flip
+is dated to the read.
+
+THE THRESHOLD IS A SETTING, NOT A CONSTANT (2026-08-05). It moved from a
+hardcoded 14 to settings.ghost_after_days() (default 21), adjustable from the
+Settings screen. Two consequences worth knowing before you touch this:
+
+  * THE FLIP IS DESTRUCTIVE. apply_auto_ghost overwrites `status` and keeps no
+    record of what was there, so a row that was at "screening" when it ghosted
+    is afterwards indistinguishable from one that was at "applied". RAISING the
+    threshold therefore does NOT un-ghost rows already flipped at the old value
+    — that needs a deliberate one-off correction, and the old status has to be
+    reconstructed by hand or inferred from screening_interview / interview_rounds.
+    (This is exactly what the 14 -> 21 change cost: a handful of rows had to be
+    corrected by hand, and one of them could not be reconstructed from the data
+    at all.)
+  * A CORRECTION CANNOT GO THROUGH update_status. "ghosted" is TERMINAL, and
+    _is_legal_transition refuses terminal -> live by design. Any un-ghosting is
+    a direct write to the file, not an API call. Do not weaken the ladder to
+    make a backfill convenient.
 
 IDENTITY / DEDUPE: an application is identified by (company_key, id). Adding a
 role already tracked in the SAME PHASE is a no-op (returns the existing row).
@@ -65,6 +86,7 @@ import datetime
 from pathlib import Path
 
 from . import paths
+from . import settings
 
 
 # ---- The status model -----------------------------------------------------
@@ -113,7 +135,20 @@ def is_rejection(status: str) -> bool:
     return (status or "") in REJECTION_STATUSES
 
 # Days of silence (since the last forward signal) before a live row auto-ghosts.
-GHOST_AFTER_DAYS = 14
+# This USED to be a module constant of 14. It is now a setting so it can be
+# changed from the Settings screen without a code change — settings.py owns the
+# default (21), so there is exactly one source of truth for the number.
+def ghost_after_days() -> int:
+    """The current auto-ghost threshold in days.
+
+    Falls back to the built-in default if the settings file is unreadable: a
+    corrupt settings file must never stop the tracker from listing, in keeping
+    with this store's forgiving-read rule. NOT the dormancy threshold — they
+    share a default of 21 and nothing else (see settings.ghost_after_days)."""
+    try:
+        return settings.ghost_after_days()
+    except Exception:
+        return int(settings.DEFAULTS["ghost_after_days"])
 
 
 class ApplicationError(Exception):
@@ -181,17 +216,29 @@ def _days_between(earlier_iso: str, today: datetime.date) -> int | None:
     return (today - earlier).days
 
 
-def apply_auto_ghost(records: list, today: datetime.date | None = None) -> tuple:
+def apply_auto_ghost(records: list, today: datetime.date | None = None,
+                     threshold_days: int | None = None) -> tuple:
     """
-    Flip any LIVE row whose last forward signal was >= GHOST_AFTER_DAYS ago to
-    'ghosted'. Pure-ish: returns (new_records, changed_count). Does NOT write —
-    callers persist if changed_count > 0.
+    Flip any LIVE row whose last forward signal was >= the auto-ghost threshold
+    ago to 'ghosted'. Pure-ish: returns (new_records, changed_count). Does NOT
+    write — callers persist if changed_count > 0.
 
-    A row qualifies when: status is live AND today - last_progress_at >= 14 days.
-    last_progress_at falls back to applied_on (then to None -> never ghosts) if
-    missing, so older records written before this field still behave sanely.
+    A row qualifies when: status is live AND today - last_progress_at >= the
+    threshold. last_progress_at falls back to applied_on (then to None -> never
+    ghosts) if missing, so older records written before this field still behave
+    sanely.
+
+    threshold_days - optional override; defaults to settings.ghost_after_days().
+                     Injectable in the same way (and for the same reason) as
+                     dormancy.is_dormant's threshold_days: tests must be able to
+                     pin a number without writing to the real settings file.
+
+    NOTE: this OVERWRITES status and keeps no record of the previous value. See
+    the module docstring — raising the threshold does not undo past flips.
     """
     today = today or _today()
+    if threshold_days is None:
+        threshold_days = ghost_after_days()
     changed = 0
     out = []
     for r in records:
@@ -199,17 +246,19 @@ def apply_auto_ghost(records: list, today: datetime.date | None = None) -> tuple
         if rec.get("status") in LIVE_LADDER:
             anchor = rec.get("last_progress_at") or rec.get("applied_on")
             gap = _days_between(anchor, today)
-            if gap is not None and gap >= GHOST_AFTER_DAYS:
+            if gap is not None and gap >= threshold_days:
                 rec["status"] = STATUS_GHOSTED
                 changed += 1
         out.append(rec)
     return out, changed
 
 
-def _read_with_ghost(today: datetime.date | None = None) -> list:
+def _read_with_ghost(today: datetime.date | None = None,
+                     threshold_days: int | None = None) -> list:
     """Load, apply the lazy auto-ghost, persist if anything flipped, return."""
     records = _load_raw()
-    records, changed = apply_auto_ghost(records, today=today)
+    records, changed = apply_auto_ghost(records, today=today,
+                                        threshold_days=threshold_days)
     if changed:
         _save_raw(records)
     return records

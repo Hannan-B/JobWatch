@@ -899,8 +899,12 @@ function renderReading() {
    then any of ghosted / offer / rejected / withdrawn. The server enforces the
    ladder; here we only OFFER legal moves so it never reads as broken.
 
-   Auto-ghost (handled server-side): a live row untouched for 14 days reads as
-   ghosted on load. Filters: Status · Company · Date applied · Screening.
+   Auto-ghost (handled server-side): a live row untouched for longer than the
+   auto-ghost threshold reads as ghosted on load. That threshold is a SETTING
+   (Settings → Auto-ghost threshold, default 21 days), not a constant — never
+   restate the number in this file. The tracker-trends payload carries the live
+   value as `ghost_after_days` for any label that needs to say it.
+   Filters: Status · Company · Date applied · Screening.
    ======================================================================= */
 
 /* in-memory state for the tracker (no browser storage) */
@@ -978,7 +982,26 @@ function drawTracker(scrollTop = false) {
 
   const head = el('div', { class: 'sec-head' }, [
     el('h2', {}, 'Application tracker'),
-    el('button', { class: 'btn small', onclick: openManualAdd }, '+ Add a role'),
+    // The two controls are wrapped: .sec-head is justify-content: space-between,
+    // so a third direct child would strand the middle one across the header.
+    el('div', { class: 'sec-head-actions' }, [
+      // 2026-08-05 — export the tracker as markdown, for handing to an AI agent
+      // to review. A plain <a download> rather than a fetch-and-Blob: the server
+      // sets Content-Disposition, so the browser saves it with the right
+      // filename and the formatting lives in one place
+      // (server._applications_markdown) instead of being duplicated here. Only
+      // offered when there's something in it — an export of nothing is a
+      // broken-feeling download.
+      apps.length ? el('a', {
+        class: 'btn small ghost',
+        href: '/api/applications/export.md'
+              + (TRACKER && TRACKER.phase ? `?phase=${encodeURIComponent(TRACKER.phase.id)}` : ''),
+        download: '',
+        title: 'Download this phase’s applications as a markdown file, including '
+               + 'your notes and the summary rates.',
+      }, 'Download as markdown') : null,
+      el('button', { class: 'btn small', onclick: openManualAdd }, '+ Add a role'),
+    ].filter(Boolean)),
   ]);
 
   // No phase at all → nothing to track yet.
@@ -1209,6 +1232,11 @@ function trackerRow(a) {
     a.no_longer_listed
       ? el('span', { class: 'tr-gone', title: 'This role is no longer in the company’s latest check.' }, 'no longer listed')
       : null,
+    // 2026-08-05 — first seen. The tracker is a flat list with no company
+    // header, so unlike the Jobs tab there's no "Added <date>" disclosure
+    // alongside it; the owner's call (option 1) was to show the date plainly
+    // here and carry the caveat on the Jobs tab only.
+    firstSeenLine(a),
     tags.length ? el('div', { class: 'tr-tags' }, tags) : null,
   ]);
 
@@ -2190,6 +2218,57 @@ function flagTags(job, opts = {}) {
   return tags;
 }
 
+/* 2026-08-05 — the first-seen line: when did JobWatch first see this role?
+   ONE helper for all three views (run results, Saved, Application Tracker) so
+   the wording can't drift between them, exactly like flagTags above.
+
+   Renders two lines: the exact date, with the relative age quietly underneath.
+   Returns null when there's nothing to show, so callers can drop it in with a
+   plain `?:` and no layout gymnastics.
+
+   WHAT THE DATE IS NOT: the employer's posting date. It's the start of the
+   role's current unbroken run of sightings in YOUR checks. The board's own date
+   is a separate future field (`posted_on`) — don't merge them here.
+
+   `first_seen_unclear` renders honestly as "not recorded" rather than being
+   hidden. A manually-added tracker row never came through a check, so JobWatch
+   truly never saw it appear; silently omitting the line would read as a bug. */
+function firstSeenLine(job) {
+  if (job.first_seen_unclear) {
+    return el('div', { class: 'j-seen is-unclear' }, [
+      el('span', { class: 'j-seen-date' }, 'First seen: not recorded'),
+      el('span', { class: 'j-seen-rel' }, 'added by hand, or before tracking began'),
+    ]);
+  }
+  if (!job.first_seen) return null;
+  const exact = fmtLongDate(job.first_seen);
+  if (!exact) return null;
+  return el('div', { class: 'j-seen' }, [
+    el('span', { class: 'j-seen-date' }, `First seen ${exact}`),
+    el('span', { class: 'j-seen-rel' }, relativeDays(job.first_seen)),
+  ]);
+}
+
+/* "12 days ago" / "today" / "yesterday". Whole days, computed in the browser
+   from the stored date — which is why a saved report stays correct however long
+   it sits: only the date is persisted, never the "N days ago". */
+function relativeDays(iso) {
+  if (!iso) return '';
+  const then = new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso);
+  if (isNaN(then)) return '';
+  const now = new Date();
+  const a = Date.UTC(then.getFullYear(), then.getMonth(), then.getDate());
+  const b = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.max(0, Math.round((b - a) / 86400000));
+  if (days === 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  if (days < 14) return 'a week ago';
+  if (days < 31) return `${Math.floor(days / 7)} weeks ago`;
+  if (days < 365) return `${Math.round(days / 30)} months ago`;
+  return 'over a year ago';
+}
+
 function jobRow(job, kind, showCompany = false, ctx = null) {
   const sub = [];
   if (showCompany && job._company) sub.push(el('span', { class: 'j-company' }, job._company));
@@ -2216,6 +2295,7 @@ function jobRow(job, kind, showCompany = false, ctx = null) {
     el('div', { class: 'j-main' }, [
       el('div', { class: 'j-title' }, [titleNode]),
       sub.length ? el('div', { class: 'j-sub' }, sub) : null,
+      firstSeenLine(job),
     ]),
     tags.length ? el('div', { class: 'j-sub', style: 'gap:6px' }, tags) : null,
     starNode,
@@ -4202,14 +4282,22 @@ function buildTrackerStats(t) {
   const pct = (v) => `${Math.round((v || 0) * 100)}%`;
   const rates = t.rates || {};
   const win = t.windows || {};
+  // The live auto-ghost threshold from the server, so this label always states
+  // the rule actually in force. Fall back to the default only if an older
+  // server response omits it.
+  const ghostDays = t.ghost_after_days || 21;
 
   const rateCards = el('div', { class: 'stat-cards' }, [
     statCard('Response rate', pct(rates.response_rate), 'reached screening or beyond'),
     statCard('Interview rate', pct(rates.interview_rate), 'reached an interview'),
     statCard('Offer rate', pct(rates.offer_rate), 'ended in an offer'),
-    statCard('Ghost rate', pct(rates.ghost_rate), 'went silent 14+ days'),
+    statCard('Ghost rate', pct(rates.ghost_rate), `went silent ${ghostDays}+ days`),
   ]);
 
+  // NOTE: this 14 is NOT the auto-ghost threshold — it's how many applications
+  // were SUBMITTED in the last fortnight, and it stays at 14 deliberately (the
+  // owner tracks submission cadence in two-week blocks). Don't "tidy" it to
+  // match the ghost threshold; they measure different things.
   const winCards = el('div', { class: 'stat-cards' }, [
     statCard('All time', String(win.all != null ? win.all : t.total), 'this phase'),
     statCard('Last 14 days', String(win['14'] || 0), 'applied'),
@@ -4829,7 +4917,11 @@ async function openInterests() {
 }
 
 /* =======================================================================
-   SETTINGS — adjustable preferences (E.7): the dormancy threshold
+   SETTINGS — adjustable preferences (E.7): dormancy + auto-ghost thresholds
+
+   The two thresholds LOOK alike and both default to 21 days, but they are
+   unrelated: dormancy is a whole phase going unchecked, auto-ghost is one
+   employer going quiet on one application. Saved together, stored separately.
    ======================================================================= */
 
 async function openSettings() {
@@ -4842,12 +4934,19 @@ async function openSettings() {
     return;
   }
   const input = el('input', { type: 'text', id: 'dormInput', value: String(s.dormancy_days) });
+  const ghostInput = el('input', {
+    type: 'text', id: 'ghostInput',
+    value: String(s.ghost_after_days != null ? s.ghost_after_days : 21),
+  });
   const saveBtn = el('button', { class: 'btn signal' }, 'Save settings');
   saveBtn.addEventListener('click', async () => {
     const v = input.value.trim();
+    const g = ghostInput.value.trim();
     saveBtn.disabled = true;
     try {
-      await api.post('/api/settings/save', { dormancy_days: v });
+      // Both thresholds go in one request; the server validates each and
+      // rejects the whole save with a plain message if either is out of range.
+      await api.post('/api/settings/save', { dormancy_days: v, ghost_after_days: g });
       toast('Settings saved.');
       loadHome();
     } catch (e) { toast(e.message, true); saveBtn.disabled = false; }
@@ -4935,6 +5034,17 @@ async function openSettings() {
       el('div', { class: 'field', style: 'margin:0;max-width:280px' }, [
         el('label', { for: 'dormInput' }, 'Days of silence before dormant'),
         input,
+      ]),
+    ]),
+    el('div', { class: 'pref-block' }, [
+      el('h3', {}, 'Auto-ghost threshold'),
+      el('p', { class: 'pref-hint' },
+        `An application you’ve heard nothing back on for this many days is marked “Ghosted” in the tracker. The clock starts at the last forward signal — applying, moving up a stage, or the screening toggle going to Yes — and notes or round edits don’t reset it. Between ${s.ghost_min != null ? s.ghost_min : 1} and ${s.ghost_max != null ? s.ghost_max : 365} days. Default is 21.`),
+      el('p', { class: 'pref-hint' },
+        'Raising this won’t bring back applications already marked Ghosted — the tracker doesn’t keep a record of what they were before. Lower it only if you’re happy for that to happen sooner.'),
+      el('div', { class: 'field', style: 'margin:0;max-width:280px' }, [
+        el('label', { for: 'ghostInput' }, 'Days of silence before ghosted'),
+        ghostInput,
       ]),
     ]),
     endBlock,
@@ -5862,7 +5972,17 @@ function companyRolesPane(c) {
     el('div', { class: 'tally' }, [
       el('b', {}, `${current.length} current role${current.length === 1 ? '' : 's'}`),
       document.createTextNode((c.new || []).length ? ` · ${(c.new || []).length} new this run` : ''),
-    ]),
+      // 2026-08-05 — the bounded-dates disclosure, shown ONCE per company rather
+      // than caveating every role. Roles already live when a company was added
+      // read as first seen on its first check, so their dates are floors. This
+      // one label tells you which company's dates to read that way (the owner's
+      // call, in preference to an "on or before" marker on 133 rows).
+      c.added_on ? el('span', { class: 'c-added', title:
+        'Roles already live when you added this company show their first check '
+        + 'date, so those dates are the earliest they could be — not necessarily '
+        + 'when the role went up.' },
+        ` · added ${fmtLongDate(c.added_on) || c.added_on}`) : null,
+    ].filter(Boolean)),
   ]);
 
   if (!current.length) {
@@ -6049,11 +6169,26 @@ function savedRow(s) {
 
   const tags = flagTags(s);  // M.5 — re-flagged on read by the server
 
-  return el('div', { class: 'job is-current saved-row' }, [
+  // 2026-08-05 — a saved role that has since come off the board reads exactly
+  // like a removed role in the run view: is-removed drives the existing
+  // strikethrough + --removed colour, no new CSS. The explicit label matters
+  // too — a strikethrough alone could be read as "done" rather than "gone",
+  // and it's the only cue a screen reader would otherwise get.
+  const gone = !!s.no_longer_listed;
+  const kindClass = gone ? 'is-removed' : 'is-current';
+
+  return el('div', { class: `job ${kindClass} saved-row` }, [
     el('span', { class: 'marker' }),
     el('div', { class: 'j-main' }, [
-      el('div', { class: 'j-title' }, [titleNode, ...tags]),
+      el('div', { class: 'j-title' }, [
+        titleNode,
+        gone ? el('span', { class: 'tr-gone', title:
+          'This role is no longer in the company’s latest check.' },
+          'no longer listed') : null,
+        ...tags,
+      ].filter(Boolean)),
       el('div', { class: 'j-sub' }, sub),
+      firstSeenLine(s),
     ]),
     el('div', { class: 'saved-actions' }, [
       el('button', { class: 'btn ghost small', onclick: () => markApplied(s) }, 'Applied'),

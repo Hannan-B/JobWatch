@@ -1,16 +1,20 @@
 """
 settings.py  (Phase D — your adjustable preferences)
 ====================================================
-A tiny store for settings you can change without touching code. Right now it
-holds exactly one thing: how many days of silence count as "dormant". The
-default is 21 days. You can change it later (e.g. to 28) from the settings
-screen once the interface exists — this file is what that screen will read and
-write underneath.
+A tiny store for settings you can change without touching code. It holds the
+day-count thresholds the app judges silence by: how long a PHASE can go
+unchecked before it counts as "dormant", and how long a single APPLICATION can
+sit without a forward signal before the tracker marks it "ghosted".
 
 Why its own file: keeping settings separate means the Phase E settings screen
-has one clean place to look, and the dormancy logic (dormancy.py) reads the
-number from here instead of having "21" baked into the code. Change it once,
-everywhere respects it.
+has one clean place to look, and the logic that uses these numbers (dormancy.py,
+applications.py) reads them from here instead of having a literal baked into the
+code. Change it once, everywhere respects it.
+
+NOTE — the two thresholds are INDEPENDENT and happen to share a default of 21
+days. They answer different questions (a whole phase going quiet vs. one
+employer going quiet) and must never be collapsed into one setting or read from
+each other's accessor. Changing one must not move the other.
 
 Built deliberately small. Adding another setting later is easy: give it a key,
 a default in DEFAULTS, and (optionally) a friendly getter like the one below.
@@ -19,7 +23,9 @@ We are NOT pre-building settings we don't need yet — that's the project rule.
 Settings live in:  ~/JobWatchData/settings.json   (a simple key -> value map)
 
 Current settings:
-    dormancy_days : int  — days with no check before a phase counts as dormant.
+    dormancy_days    : int — days with no check before a phase counts as dormant.
+    ghost_after_days : int — days with no forward signal on an application before
+                             the tracker auto-flips it to "ghosted".
 """
 
 import json
@@ -33,12 +39,18 @@ from . import paths
 # is what makes the store safe to grow: a new key with a new default is one line.
 DEFAULTS = {
     "dormancy_days": 21,
+    # Raised from 14 to 21 (2026-08-05). Two weeks of silence turned out to
+    # close applications that were still genuinely alive.
+    "ghost_after_days": 21,
 }
 
 # Guard rails for values a person might set, so a typo can't break the logic.
 # (Plain-language messages; this app's user is not a coder.)
 MIN_DORMANCY_DAYS = 1
 MAX_DORMANCY_DAYS = 365
+
+MIN_GHOST_AFTER_DAYS = 1
+MAX_GHOST_AFTER_DAYS = 365
 
 
 class SettingsError(Exception):
@@ -89,6 +101,8 @@ def set(key: str, value) -> None:
         raise SettingsError(f"Unknown setting '{key}'.")
     if key == "dormancy_days":
         value = _validate_dormancy_days(value)
+    elif key == "ghost_after_days":
+        value = _validate_ghost_after_days(value)
     values = _load_all()
     values[key] = value
     _save_all(values)
@@ -115,20 +129,49 @@ def set_dormancy_days(days: int) -> None:
     set("dormancy_days", days)
 
 
-def _validate_dormancy_days(value) -> int:
+def ghost_after_days() -> int:
+    """
+    How many days an application can sit with no forward signal before the
+    tracker auto-flips it to "ghosted".
+
+    Deliberately SEPARATE from dormancy_days even though both default to 21:
+    one is about a whole phase going quiet, the other about a single employer
+    going quiet. Never implement one by calling the other.
+    """
+    return int(get("ghost_after_days"))
+
+
+def set_ghost_after_days(days: int) -> None:
+    """Change the auto-ghost threshold (e.g. from 21 to 28). Validated."""
+    set("ghost_after_days", days)
+
+
+def _validate_day_count(value, label: str, lo: int, hi: int) -> int:
+    """Shared rule for every whole-number-of-days setting, so a new threshold
+    can't quietly grow its own looser validation."""
     try:
         days = int(value)
     except (TypeError, ValueError):
         raise SettingsError(
-            f"The dormancy setting needs to be a whole number of days, "
+            f"The {label} setting needs to be a whole number of days, "
             f"not '{value}'."
         )
-    if days < MIN_DORMANCY_DAYS or days > MAX_DORMANCY_DAYS:
+    if days < lo or days > hi:
         raise SettingsError(
-            f"The dormancy setting should be between {MIN_DORMANCY_DAYS} and "
-            f"{MAX_DORMANCY_DAYS} days. You gave {days}."
+            f"The {label} setting should be between {lo} and {hi} days. "
+            f"You gave {days}."
         )
     return days
+
+
+def _validate_dormancy_days(value) -> int:
+    return _validate_day_count(value, "dormancy",
+                               MIN_DORMANCY_DAYS, MAX_DORMANCY_DAYS)
+
+
+def _validate_ghost_after_days(value) -> int:
+    return _validate_day_count(value, "auto-ghost",
+                               MIN_GHOST_AFTER_DAYS, MAX_GHOST_AFTER_DAYS)
 
 
 # Quick manual test:  python3 -m jobwatch.settings

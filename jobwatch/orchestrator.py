@@ -62,6 +62,7 @@ from . import filters
 from . import companies
 from . import interests as interests_store
 from . import trends as trends_store
+from . import first_seen as first_seen_store
 from . import market_scope  # Phase O — source-side fetch scoping from chosen cities
 
 
@@ -192,6 +193,42 @@ def _record_trends(company_key: str, phase_id: str, jobs: list,
         )
     except Exception:
         pass  # trends never break a run
+
+
+def _record_first_seen(company_key: str, jobs: list,
+                       previous_jobs: list | None,
+                       today: datetime.date | None = None,
+                       is_first_check: bool = False,
+                       carry_through_gap: bool = False) -> None:
+    """2026-08-05 — fold this check into the first-seen index: since when has
+    each role been continuously present?
+
+    Deliberately modelled on _record_trends above, including the swallow: this
+    is a cheap tally layered on top, NOT the source of truth. Snapshots are.
+    A failure here must never break a real job check, and the index can always
+    be regenerated from the snapshot tree with
+    first_seen.rebuild_from_snapshots().
+
+    previous_jobs - the immediately-preceding check's list, which is what makes
+                    "still here" distinguishable from "left and came back". None
+                    when unknown, in which case continuity is ASSUMED (never
+                    invent a gap without evidence).
+    carry_through_gap - True on a dormant clean-baseline. The phase lapsed, so
+                    WE stopped looking; that must not restart a job's clock."""
+    try:
+        prev_ids = None
+        if previous_jobs is not None:
+            prev_ids = {str(j.get("id")) for j in previous_jobs
+                        if j.get("id") not in (None, "")}
+        first_seen_store.record_check_and_save(
+            company_key, jobs,
+            previous_job_ids=prev_ids,
+            today=today,
+            is_first_check=is_first_check,
+            carry_through_gap=carry_through_gap,
+        )
+    except Exception:
+        pass  # the first-seen index never breaks a run
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +533,20 @@ def _check_one_company(company: dict, phase_id: str, the_interests: dict,
         # and counts as added; nothing removed (the honest first-check picture).
         _record_trends(key, phase_id, jobs, new_jobs=jobs, removed_jobs=[],
                        today=today, phase_type=phase_type)
+        # 2026-08-05 — first-seen. Two distinct baselines land here and they are
+        # NOT the same event:
+        #   * no previous snapshot at all -> the company's first-ever check, so
+        #     every role's date is an upper bound (it may have been live for
+        #     months before you added the company).
+        #   * a previous snapshot exists -> the phase LAPSED. The roles didn't go
+        #     anywhere; we stopped looking. Carry their clocks through the gap
+        #     rather than treating the return as a re-appearance.
+        _record_first_seen(key, jobs,
+                           previous_jobs=(previous.get("jobs")
+                                          if isinstance(previous, dict) else None),
+                           today=today,
+                           is_first_check=(previous is None),
+                           carry_through_gap=(previous is not None))
         return {
             "key": key, "name": name, "ok": True,
             "baseline": True,
@@ -518,6 +569,10 @@ def _check_one_company(company: dict, phase_id: str, the_interests: dict,
     # Phase N — record trends with this check's real added/removed deltas.
     _record_trends(key, phase_id, jobs, new_jobs=new, removed_jobs=removed,
                    today=today, phase_type=phase_type)
+    # 2026-08-05 — first-seen. previous_jobs is what distinguishes "still here"
+    # from "came back": a role absent from the last check but present now has
+    # its clock restarted (the locked re-appearance rule).
+    _record_first_seen(key, jobs, previous_jobs=previous_jobs, today=today)
     return {
         "key": key, "name": name, "ok": True,
         "baseline": False,

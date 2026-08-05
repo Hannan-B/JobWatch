@@ -456,6 +456,39 @@ a:hover { text-decoration: underline; }
   font-size: 13px; color: var(--ink-faint); margin-top: 2px;
   display: flex; flex-wrap: wrap; gap: 4px 12px;
 }
+
+/* 2026-08-05 — the first-seen line, under the location line. Two stacked rows:
+   the exact date, with the relative age quieter beneath it.
+
+   NO NEW TOKENS ON PURPOSE. Everything here reads --ink-faint, which is already
+   themed in all six palettes and already proven against --paper by test_contrast
+   (it's what .j-sub above uses). A new colour channel would have to be added to
+   every theme block or the completeness lint fails — and a first-seen date is
+   not worth a token.
+
+   The date is mono because dates are instrument values in this app (Fraunces
+   display / Inter body / IBM Plex Mono numbers + dates), matching .tally and
+   .tr-date rather than inventing a third treatment. Nothing here drops below
+   12px: the accessibility pass established that floor and a supplementary line
+   is exactly where it would be tempting to breach it. */
+.job .j-seen, .tr-title .j-seen {
+  margin-top: 3px; display: flex; flex-direction: column; line-height: 1.35;
+}
+.j-seen-date {
+  font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;
+  color: var(--ink-faint);
+}
+.j-seen-rel { font-size: 12px; color: var(--ink-faint); }
+
+/* "not recorded" — a manual tracker add, or a role whose company has gone. Said
+   plainly rather than hidden, same contract as the "location unclear" tag: an
+   absent line would read as a bug, and a guessed date would be worse. */
+.j-seen.is-unclear .j-seen-date { font-style: italic; }
+
+/* The per-company "added <date>" disclosure in the Jobs two-pane header. Sits
+   inside .tally, so it inherits the mono/--ink-soft treatment; it only needs the
+   help cursor to advertise its tooltip. */
+.c-added { cursor: help; }
 .job .j-company { color: var(--slate); font-weight: 500; }
 .tag {
   font-family: 'IBM Plex Mono', monospace; font-size: 10.5px;
@@ -1443,6 +1476,19 @@ button.mc-bucket-row:hover { background: var(--paper-2); }
 }
 /* Trash in the phase-detail header sits after the status pill. */
 .sec-head-trash { margin-left: auto; flex: none; align-self: center; }
+
+/* 2026-08-05 — a group of controls on the right of a .sec-head. Needed because
+   .sec-head is justify-content: space-between: with one control that reads
+   correctly, but a second direct child gets stranded in the middle. */
+.sec-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* An <a> carrying .btn (the tracker's markdown download). A link is inline and
+   underlines on hover by default, so padding renders oddly and it reads as a
+   link wearing a button costume. These three lines make it behave like the
+   <button> beside it. The focus ring is inherited from .btn:focus-visible, so
+   it keeps the two-band treatment the accessibility pass established. */
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+a.btn:hover { text-decoration: none; }
 
 /* History drill-in — the per-company role count. */
 .history-count {

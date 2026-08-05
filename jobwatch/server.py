@@ -39,6 +39,7 @@ from . import phases
 from . import companies
 from . import interests as interests_store
 from . import settings
+from . import first_seen as first_seen_store
 from . import dormancy
 from . import storage
 from . import filters
@@ -180,6 +181,13 @@ class _RunState:
             # and save it like any other — the gone-alerts + last-report apply.
             try:
                 _attach_gone_alerts(res)
+            except Exception:
+                pass
+            # 2026-08-05 — first-seen dates + the company added-on disclosure.
+            # Separately wrapped from the gone-alerts above so one failing can
+            # never take the other down with it, and neither can lose the run.
+            try:
+                _attach_first_seen(res)
             except Exception:
                 pass
             _save_last_report(res)
@@ -485,6 +493,12 @@ def _settings_state():
         "dormancy_days": settings.dormancy_days(),
         "dormancy_min": settings.MIN_DORMANCY_DAYS,
         "dormancy_max": settings.MAX_DORMANCY_DAYS,
+        # Separate threshold, same shape. Defaults match (21) but the two are
+        # independent: one is a phase going quiet, one is an employer going
+        # quiet. Never serve one from the other's accessor.
+        "ghost_after_days": settings.ghost_after_days(),
+        "ghost_min": settings.MIN_GHOST_AFTER_DAYS,
+        "ghost_max": settings.MAX_GHOST_AFTER_DAYS,
     }
 
 
@@ -672,6 +686,23 @@ def _reflag_records(records, fields=("id", "title", "location", "department", "u
         rec["department_unclear"] = rid in dept_unclear_ids
         rec["department_match"] = rid in dept_match_ids
         out.append(rec)
+
+    # 2026-08-05 — first-seen dates. Attached HERE because this one helper feeds
+    # both the Saved tab and the Application Tracker, so neither can drift from
+    # the other. Both are FLAT lists spanning companies, so annotate() resolves
+    # each row by its own company_key rather than a single passed-in key.
+    #
+    # Rows with no index entry come back first_seen_unclear=True rather than
+    # with a guessed date — the same contract as location_unclear above. That is
+    # the correct and permanent answer for a manually-added tracker row: it never
+    # came through a check, so JobWatch genuinely never saw it appear.
+    #
+    # Non-critical: a missing or unreadable index must not stop saved roles or
+    # applications from listing, so a failure here leaves the rows unannotated.
+    try:
+        out = first_seen_store.annotate(out)
+    except Exception:
+        pass
     return out
 
 
@@ -791,9 +822,16 @@ def _current_roles_state(company_key: str):
     # the run snapshots), so re-running apply_all just re-flags/re-sorts; it
     # won't drop anything that location already let through.
     flagged = filters.apply_all(snap["jobs"], the_interests)
+    # 2026-08-05 — first-seen dates, plus added_on so the Jobs tab can disclose
+    # that a recently-added company's dates are floors rather than facts.
+    try:
+        roles = first_seen_store.annotate(flagged["shown"], company_key=company_key)
+    except Exception:
+        roles = flagged["shown"]
     return {
-        "company": {"key": company_key, "display_name": display},
-        "roles": flagged["shown"],
+        "company": {"key": company_key, "display_name": display,
+                    "added_on": (rec or {}).get("added_on")},
+        "roles": roles,
         "taken_at": snap.get("taken_at"),
         "phase_id": phase["id"],
     }
@@ -819,6 +857,235 @@ def _adopt_applied_into_tracker():
         return applications_store.adopt_from_saved(saved_store, phase_id)
     except Exception:
         return 0
+
+
+def _mark_no_longer_listed(rows, phase_id):
+    """Flag rows whose role id is absent from their company's latest snapshot in
+    this phase — i.e. the role has come off the board since you saved or applied.
+
+    Read-only: reuses snapshots that already exist, no fetch. Returns COPIES.
+
+    The rule is deliberately conservative in one direction: we only assert
+    "no longer listed" when there IS a snapshot to check against AND the id is
+    genuinely absent. No snapshot means we can't say, so the flag stays false —
+    a company we failed to reach must never make every tracked role look dead.
+    (Soft-fail already guarantees a failed check writes no snapshot, so the
+    latest snapshot is always a real one; this guards the never-checked case.)
+
+    A manual tracker add carries a synthetic `manual-<ts>` id that no snapshot
+    will ever contain. Those rows sit in companies that usually DO have
+    snapshots, so they'd flag as "no longer listed" — which is why callers pass
+    only rows worth cross-referencing, and why the tracker's own manual rows are
+    tolerated as a known, harmless quirk of the L.5 marker.
+
+    Shared by the Application Tracker (L.5) and, since 2026-08-05, the Saved tab,
+    so "this role is gone" means exactly the same thing in both places rather
+    than being computed twice and drifting.
+    """
+    rows = list(rows or [])
+    if not rows or not phase_id:
+        return [dict(r) for r in rows]
+
+    snap_ids_by_company = {}
+    for r in rows:
+        ck = r.get("company_key")
+        if ck and ck not in snap_ids_by_company:
+            snap = storage.load_latest_snapshot(ck, phase_id)
+            if snap and isinstance(snap.get("jobs"), list):
+                snap_ids_by_company[ck] = {str(j.get("id")) for j in snap["jobs"]}
+            else:
+                snap_ids_by_company[ck] = None  # no snapshot -> we can't say
+
+    out = []
+    for r in rows:
+        rec = dict(r)
+        ids = snap_ids_by_company.get(r.get("company_key"))
+        rec["no_longer_listed"] = bool(ids is not None
+                                       and str(r.get("id")) not in ids)
+        out.append(rec)
+    return out
+
+
+def _notes_html_to_markdown(html: str) -> str:
+    """Turn the tracker's restricted notes HTML into markdown.
+
+    applications._sanitize_notes_html guarantees the input is limited to
+    b/strong/i/em/u/ul/ol/li/p/br with NO attributes, so this doesn't need to be
+    a general HTML parser — it only has to handle that closed set. Stdlib only,
+    like everything else here.
+
+    `u` has no markdown equivalent and is dropped to plain text rather than
+    faked with underscores, which markdown would render as italics and quietly
+    change the meaning. Ordered lists all render as "1." — markdown renumbers
+    them on render, and the stored HTML carries no start attribute anyway.
+    """
+    import re as _re
+    import html as _html
+    if not isinstance(html, str) or not html.strip():
+        return ""
+    s = html
+    s = _re.sub(r"(?i)<br\s*/?>", "\n", s)
+    s = _re.sub(r"(?i)</p\s*>", "\n\n", s)
+    s = _re.sub(r"(?i)<p\s*>", "", s)
+    s = _re.sub(r"(?i)</?(?:b|strong)\s*>", "**", s)
+    s = _re.sub(r"(?i)</?(?:i|em)\s*>", "*", s)
+    s = _re.sub(r"(?i)</?u\s*>", "", s)
+    s = _re.sub(r"(?i)<li\s*>", "- ", s)
+    s = _re.sub(r"(?i)</li\s*>", "\n", s)
+    s = _re.sub(r"(?i)</?(?:ul|ol)\s*>", "\n", s)
+    s = _re.sub(r"<[^>]*>", "", s)          # anything else: drop the tag, keep text
+    s = _html.unescape(s)
+    s = _re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+_EXPORT_STATUS_LABELS = {
+    "applied": "Applied",
+    "screening": "Screening",
+    "interview": "Interview",
+    "ghosted": "Ghosted",
+    "offer": "Offer",
+    "rejected_before_interview": "Rejected (before interview)",
+    "rejected_after_interview": "Rejected (after interview)",
+    "rejected": "Rejected (stage not recorded)",
+    "withdrawn": "Withdrawn",
+}
+
+
+def _applications_markdown(phase_id=None) -> str:
+    """The Application Tracker as a markdown document (2026-08-05).
+
+    Built for handing to an AI agent for review, which drives three choices:
+
+      * It leads with a SUMMARY (counts by status, the funnel, the real response
+        rate) so a reader gets the shape before the detail.
+      * Every role gets its own section with the full context — dates, stage,
+        rounds, whether the role is still listed, and the owner's own notes —
+        because a reviewer's most useful question is "why did this one stall",
+        and that's unanswerable from a table of statuses.
+      * It states its own caveats inline. An agent reading "first seen 24 Jul"
+        with no explanation will treat it as the posting date and reason wrongly
+        about how fast the owner applied.
+
+    Reuses the same helpers the tracker screen uses (_employer_engaged,
+    _reached_screening/_interview) so the numbers in the export can never
+    disagree with the numbers on screen.
+    """
+    state = _applications_state(phase_id=phase_id)
+    rows = state.get("applications", []) or []
+    phase = state.get("phase") or {}
+    today = datetime.date.today()
+
+    lines = []
+    lines.append("# Application tracker export")
+    lines.append("")
+    lines.append(f"- **Exported:** {today.isoformat()}")
+    if phase.get("name"):
+        span = phase.get("started_on") or "?"
+        if phase.get("ended_on"):
+            span += f" to {phase['ended_on']}"
+        else:
+            span += " to present"
+        lines.append(f"- **Phase:** {phase['name']} ({phase.get('type', '?')}, {span})")
+    lines.append(f"- **Applications in this phase:** {len(rows)}")
+    lines.append("")
+
+    if not rows:
+        lines.append("_No applications recorded in this phase yet._")
+        return "\n".join(lines) + "\n"
+
+    # ---- summary ----
+    by_status = {}
+    for r in rows:
+        by_status[r.get("status", "applied")] = by_status.get(r.get("status", "applied"), 0) + 1
+    engaged = sum(1 for r in rows if _employer_engaged(r))
+    reached_screening = sum(1 for r in rows if _reached_screening(r))
+    reached_interview = sum(1 for r in rows if _reached_interview(r))
+    offers = by_status.get("offer", 0)
+    pct = lambda n: f"{round(100 * n / len(rows))}%"
+
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Measure | Count | Rate |")
+    lines.append("|---|---|---|")
+    lines.append(f"| Applied | {len(rows)} | — |")
+    lines.append(f"| Employer engaged | {engaged} | {pct(engaged)} |")
+    lines.append(f"| Reached screening | {reached_screening} | {pct(reached_screening)} |")
+    lines.append(f"| Reached interview | {reached_interview} | {pct(reached_interview)} |")
+    lines.append(f"| Offers | {offers} | {pct(offers)} |")
+    lines.append("")
+    lines.append("### By status")
+    lines.append("")
+    for st in applications_store.ALL_STATUSES:
+        if by_status.get(st):
+            lines.append(f"- {_EXPORT_STATUS_LABELS.get(st, st)}: {by_status[st]}")
+    lines.append("")
+
+    # ---- how to read this ----
+    ghost_days = applications_store.ghost_after_days()
+    lines.append("## How to read this")
+    lines.append("")
+    lines.append(
+        f"- **Employer engaged** means the employer actually responded — a "
+        f"screening, an interview, an offer, or a rejection that came after "
+        f"interviewing. An automated rejection with no human contact does not "
+        f"count, and neither does the applicant withdrawing.")
+    lines.append(
+        f"- **Ghosted** is applied automatically after {ghost_days} days with no "
+        f"forward signal. It means silence, not an explicit rejection.")
+    lines.append(
+        "- **First seen** is when JobWatch first saw the role on the company's "
+        "careers page — NOT when the employer posted it. For roles that were "
+        "already live when the company was added to JobWatch, it is the date "
+        "tracking began, so treat it as 'no later than'. Do not use it to judge "
+        "how quickly an application was submitted.")
+    lines.append(
+        "- **No longer listed** means the role has since come off the board.")
+    lines.append("")
+
+    # ---- the roles ----
+    lines.append("## Applications")
+    lines.append("")
+    for r in sorted(rows, key=lambda x: (x.get("applied_on") or ""), reverse=True):
+        title = r.get("title") or "(untitled role)"
+        company = r.get("company_name") or r.get("company_key") or "?"
+        lines.append(f"### {title} — {company}")
+        lines.append("")
+        st = r.get("status", "applied")
+        lines.append(f"- **Status:** {_EXPORT_STATUS_LABELS.get(st, st)}")
+        lines.append(f"- **Applied on:** {r.get('applied_on') or 'unknown'}")
+        last = r.get("last_progress_at")
+        if last:
+            try:
+                gap = (today - datetime.date.fromisoformat(str(last)[:10])).days
+                lines.append(f"- **Last forward signal:** {last} ({gap} days ago)")
+            except ValueError:
+                lines.append(f"- **Last forward signal:** {last}")
+        if r.get("first_seen"):
+            bounded = " (or earlier — tracking began this day)" \
+                if r.get("first_seen_bounded") else ""
+            lines.append(f"- **Role first seen:** {r['first_seen']}{bounded}")
+        elif r.get("first_seen_unclear"):
+            lines.append("- **Role first seen:** not recorded")
+        lines.append(f"- **Screening interview:** "
+                     f"{'yes' if r.get('screening_interview') else 'no'}")
+        lines.append(f"- **Interview rounds:** {r.get('interview_rounds') or 0}")
+        if r.get("no_longer_listed"):
+            lines.append("- **No longer listed on the careers page**")
+        if r.get("location"):
+            lines.append(f"- **Location:** {r['location']}")
+        if r.get("url"):
+            lines.append(f"- **Link:** {r['url']}")
+        notes = _notes_html_to_markdown(r.get("notes") or "")
+        if notes:
+            lines.append("")
+            lines.append("**Notes:**")
+            lines.append("")
+            for ln in notes.splitlines():
+                lines.append(f"> {ln}" if ln.strip() else ">")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
 
 
 def _applications_state(phase_id=None):
@@ -848,30 +1115,10 @@ def _applications_state(phase_id=None):
 
     rows = applications_store.list_applications(phase_id=target_phase_id)
 
-    # L.5 — mark rows whose role id is no longer in the company's latest snapshot
-    # within this phase. Read-only: reuses the snapshots that already exist. A
-    # manual add (synthetic id) won't match a snapshot id, so we only flag rows
-    # whose company HAS a snapshot AND whose id is genuinely absent from it.
-    snap_ids_by_company = {}
-    if target_phase_id:
-        for r in rows:
-            ck = r.get("company_key")
-            if ck and ck not in snap_ids_by_company:
-                snap = storage.load_latest_snapshot(ck, target_phase_id)
-                if snap and isinstance(snap.get("jobs"), list):
-                    snap_ids_by_company[ck] = {str(j.get("id")) for j in snap["jobs"]}
-                else:
-                    snap_ids_by_company[ck] = None  # no snapshot to compare against
-
-    out_rows = []
-    for r in rows:
-        rec = dict(r)
-        ck = r.get("company_key")
-        ids = snap_ids_by_company.get(ck)
-        # Only assert "no longer listed" when we have a snapshot to check against
-        # AND the id isn't in it. No snapshot -> we can't say, so leave it false.
-        rec["no_longer_listed"] = bool(ids is not None and str(r.get("id")) not in ids)
-        out_rows.append(rec)
+    # L.5 — mark rows whose role has come off the board since you applied. The
+    # logic moved into _mark_no_longer_listed (2026-08-05) so the Saved tab can
+    # use the identical rule; behaviour here is unchanged.
+    out_rows = _mark_no_longer_listed(rows, target_phase_id)
 
     # M.5 — re-flag on read so tracked rows show interest/stretch/location- and
     # department-unclear tags consistent with the run views. _reflag_records keeps
@@ -886,6 +1133,46 @@ def _applications_state(phase_id=None):
         "applications": out_rows,
         "company_names": company_names,
     }
+
+
+def _attach_first_seen(result):
+    """2026-08-05 — annotate a finished run RESULT with each role's first-seen
+    date, and each company with its added_on.
+
+    Runs right after the orchestrator has updated the index, so the dates are
+    current. Annotating here rather than on read means a saved last-report is
+    self-contained; the "N days ago" part is computed in the browser from the
+    date, so it stays correct however long the report sits.
+
+    The company's `added_on` rides along because of the BOUNDED problem: every
+    role that was already live when a company was added reads as first seen on
+    that first check. Rather than caveat 133 individual rows, the Jobs tab shows
+    "Added 24 Jul" once against the company (the owner's call, 2026-08-05), which
+    tells you at a glance that its dates are floors, not facts.
+
+    Non-critical, like the recorder that feeds it: a failure here must not lose
+    a real run's results, so the caller wraps it and the dates simply don't show.
+    """
+    if not isinstance(result, dict):
+        return
+    data = first_seen_store.load()
+    for c in result.get("companies", []) or []:
+        key = c.get("key")
+        if not key:
+            continue
+        rec = companies.get_company(key)
+        c["added_on"] = (rec or {}).get("added_on")
+        for field in ("new", "removed", "current"):
+            if isinstance(c.get(field), list):
+                c[field] = first_seen_store.annotate(c[field], company_key=key,
+                                                     data=data)
+    # The all-roles view is a flat list across companies; each row already
+    # carries _company_key from orchestrator._finalise, so annotate can resolve
+    # them per row without regrouping.
+    if isinstance(result.get("all_new"), list):
+        result["all_new"] = first_seen_store.annotate(
+            [dict(j, company_key=j.get("_company_key")) for j in result["all_new"]],
+            data=data)
 
 
 def _attach_gone_alerts(result):
@@ -1504,7 +1791,8 @@ def _tracker_trends_state(phase_id=None, bucket=None, sub_bucket=None,
           "rates": { "screening_rate":0.0-1.0, "interview_rate":..,
                      "offer_rate":.., "ghost_rate":.., "response_rate":.. },
           "windows": { "all": N, "14": N, "7": N },   # applied within window
-          "by_status": { "applied":N, "screening":N, ... all 7 ... },
+          "ghost_after_days": <int>,                  # drives the Ghost rate label
+          "by_status": { "applied":N, "screening":N, ... all 8 ... },
           "weekly": [ {"week_start":"YYYY-MM-DD","count":N}, ... ],  # applied/wk
           "empty": <bool>
         }
@@ -1615,6 +1903,11 @@ def _tracker_trends_state(phase_id=None, bucket=None, sub_bucket=None,
         "funnel": funnel,
         "rates": rates,
         "windows": windows,
+        # The live auto-ghost threshold, so the Ghost rate card states the real
+        # rule rather than a number typed into the front end. The "windows" 14
+        # above is a DIFFERENT fourteen — applications SUBMITTED in the last
+        # fortnight — and is deliberately not tied to this.
+        "ghost_after_days": applications_store.ghost_after_days(),
         "by_status": by_status,
         "weekly": weekly,
         "empty": total == 0,
@@ -1665,6 +1958,24 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_download(self, text: str, filename: str,
+                       ctype: str = "text/markdown; charset=utf-8"):
+        """Send a generated text file as a browser download (2026-08-05).
+
+        Content-Disposition: attachment is what makes the browser save it rather
+        than render it, and it carries the filename — so the front end needs
+        nothing more than a plain link, no Blob juggling and no duplicated
+        formatting logic in JavaScript."""
+        body = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -1803,8 +2114,32 @@ class _Handler(BaseHTTPRequestHandler):
             # the run views (flags reflect today's interests; stored data stays lean).
             try:
                 items = saved_store.list_saved(is_dormant=_is_dormant_now())
+                # 2026-08-05 — mark saved roles that have come off the board, so
+                # the Saved tab can strike them through the way the run view
+                # strikes a removed role. Same helper the tracker uses, so "gone"
+                # means the same thing in both places. Order isn't load-bearing
+                # (_reflag_records copies rows and keeps every stored field), but
+                # it mirrors _applications_state so the two read alike.
+                cur = phases.current_phase()
+                items = _mark_no_longer_listed(items, cur["id"] if cur else None)
                 items = _reflag_records(items)
                 self._send_json({"saved": items})
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
+            return
+
+        if route == "/api/applications/export.md":
+            # 2026-08-05 — the tracker as a markdown document, for handing to an
+            # AI agent to review. Same phase scoping as /api/applications, and
+            # built from _applications_state so the numbers in the file can never
+            # disagree with the numbers on screen. ?phase=<id>.
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            pid = (qs.get("phase", [""])[0] or "").strip() or None
+            try:
+                md = _applications_markdown(phase_id=pid)
+                stamp = datetime.date.today().isoformat()
+                self._send_download(md, f"jobwatch-applications-{stamp}.md")
             except Exception as e:
                 self._send_json({"error": str(e)}, status=500)
             return
@@ -2310,10 +2645,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "interests": interests_store.load_interests()})
                 return
 
-            # ---- settings (E.7 — dormancy threshold) ----
+            # ---- settings (E.7 — dormancy threshold; 2026-08-05 auto-ghost) ----
             if route == "/api/settings/save":
                 if "dormancy_days" in body:
                     settings.set_dormancy_days(body.get("dormancy_days"))
+                if "ghost_after_days" in body:
+                    settings.set_ghost_after_days(body.get("ghost_after_days"))
                 self._send_json({"ok": True, "settings": _settings_state()})
                 return
 
